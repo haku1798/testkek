@@ -8,24 +8,30 @@ on:
   workflow_dispatch:  # Allow manual triggers
     inputs:
       build_target:
-        description: 'Build target (e.g., gki.aarch64, universal3830)'
+        description: 'Build target (e.g., gki.aarch64, universal3830, arm, x86_64)'
         required: false
-        default: 'gki.aarch64'
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - gki.aarch64
+          - universal3830
+          - arm
+          - x86_64
 
 env:
-  # Common environment variables
-  BUILD_CONFIG: ${{ github.event.inputs.build_target || 'gki.aarch64' }}
   CCACHE_DIR: /tmp/ccache
   KBUILD_BUILD_USER: github-actions
   KBUILD_BUILD_HOST: github-actions
 
 jobs:
   build:
-    runs-on: ubuntu-22.04  # Ubuntu 22.04 for better toolchain support
+    runs-on: ubuntu-22.04
     
+    # Dynamic matrix generation based on workflow_dispatch input
     strategy:
       matrix:
-        target: ['gki.aarch64', 'universal3830', 'arm', 'x86_64']
+        target: ${{ fromJSON(github.event.inputs.build_target == 'all' && '["gki.aarch64", "universal3830", "arm", "x86_64"]' || format('["{0}"]', github.event.inputs.build_target)) }}
         include:
           - target: 'gki.aarch64'
             config: 'build.config.gki.aarch64'
@@ -40,21 +46,14 @@ jobs:
             config: 'build.config.x86_64'
             arch: 'x86_64'
     
-    # Conditional logic for manual triggers
-    if: |
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.build_target != '') 
-      && (matrix.target == github.event.inputs.build_target)
-      || (github.event_name != 'workflow_dispatch')
-    
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # Full history for version info
+        fetch-depth: 0
     
     - name: Setup build environment
       run: |
-        # Install essential build tools
         sudo apt-get update
         sudo apt-get install -y \
           build-essential \
@@ -73,182 +72,137 @@ jobs:
           lzop \
           gcc-aarch64-linux-gnu \
           gcc-arm-linux-gnueabi \
-          ccache
+          ccache \
+          libncurses5-dev
         
-        # Install ccache
-        sudo apt-get install -y ccache
+        sudo ln -sf /usr/bin/python3 /usr/bin/python
         ccache --set-config=cache_dir=$CCACHE_DIR
         ccache --set-config=max_size=2G
-        ccache --zero-stats
-        
-        # Create necessary symlinks
-        sudo ln -sf /usr/bin/python3 /usr/bin/python
     
-    - name: Setup Android build tools (if needed)
-      if: contains(matrix.target, 'gki') || contains(matrix.target, 'universal')
+    - name: Show build information
       run: |
-        # Install repo tool for Android kernel builds
-        mkdir -p ~/bin
-        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-        chmod a+x ~/bin/repo
-        echo "$HOME/bin" >> $GITHUB_PATH
+        echo "Building target: ${{ matrix.target }}"
+        echo "Using config: ${{ matrix.config }}"
+        echo "Architecture: ${{ matrix.arch }}"
+        echo "Event type: ${{ github.event_name }}"
         
-        # Install additional Android build dependencies
-        sudo apt-get install -y \
-          libncurses5-dev \
-          schedtool \
-          squashfs-tools \
-          pngquant
-        
-        # Install Python packages
-        pip3 install --user \
-          pyelftools \
-          'protobuf>=3.6.0' \
-          'absl-py>=0.2.2'
-    
-    - name: Show kernel version info
-      run: |
-        echo "Kernel version information:"
         if [ -f "Makefile" ]; then
-          echo "Kernel version: $(head -5 Makefile | grep -E '^VERSION|^PATCHLEVEL|^SUBLEVEL' | xargs)"
+          echo "Kernel version:"
+          head -5 Makefile | grep -E '^VERSION|^PATCHLEVEL|^SUBLEVEL'
         fi
-        echo "Build configuration: ${{ matrix.config }}"
-        echo "Target architecture: ${{ matrix.arch }}"
-        ls -la build.config.* | head -10
     
-    - name: Configure ccache
+    - name: Set up cross-compilation environment
       run: |
-        echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
-        echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
-        echo "CCACHE_MAXSIZE=2G" >> $GITHUB_ENV
+        export ARCH=${{ matrix.arch }}
         
-        # Set up ccache for cross-compilation
-        if [ "${{ matrix.arch }}" = "arm64" ]; then
-          echo "CCACHE_PREFIX=aarch64-linux-gnu-" >> $GITHUB_ENV
-        elif [ "${{ matrix.arch }}" = "arm" ]; then
-          echo "CCACHE_PREFIX=arm-linux-gnueabi-" >> $GITHUB_ENV
+        if [ "$ARCH" = "arm64" ]; then
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "CC=ccache aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        elif [ "$ARCH" = "arm" ]; then
+          echo "CROSS_COMPILE=arm-linux-gnueabi-" >> $GITHUB_ENV
+          echo "CC=ccache arm-linux-gnueabi-gcc" >> $GITHUB_ENV
+        else
+          echo "CC=ccache gcc" >> $GITHUB_ENV
         fi
+        
+        echo "ARCH=$ARCH" >> $GITHUB_ENV
     
     - name: Build kernel
-      timeout-minutes: 60  # Build timeout
+      timeout-minutes: 60
       run: |
-        set -e  # Exit on error
+        set -e
         
-        echo "Starting kernel build for target: ${{ matrix.target }}"
-        echo "Using config: ${{ matrix.config }}"
+        echo "Starting build for ${{ matrix.target }}..."
         
-        # Method 1: Try using build_kernel.sh if it exists
+        # Check for build script first
         if [ -f "build_kernel.sh" ]; then
-          echo "Using build_kernel.sh script..."
+          echo "Using build_kernel.sh..."
           chmod +x build_kernel.sh
           
-          # Check if script supports our target
-          if ./build_kernel.sh --help 2>/dev/null | grep -q "config"; then
+          # Check if script expects config parameter
+          if ./build_kernel.sh --help 2>/dev/null | grep -qi "config"; then
             ./build_kernel.sh --config ${{ matrix.config }}
           else
             # Try with environment variable
             BUILD_CONFIG=${{ matrix.config }} ./build_kernel.sh
           fi
-        
-        # Method 2: Manual build using standard kernel build system
         else
-          echo "build_kernel.sh not found, using manual build..."
+          echo "Using manual build process..."
           
-          # Set architecture and cross-compiler
-          export ARCH=${{ matrix.arch }}
-          
-          if [ "$ARCH" = "arm64" ]; then
-            export CROSS_COMPILE=aarch64-linux-gnu-
-            export CC="ccache aarch64-linux-gnu-gcc"
-          elif [ "$ARCH" = "arm" ]; then
-            export CROSS_COMPILE=arm-linux-gnueabi-
-            export CC="ccache arm-linux-gnueabi-gcc"
-          else
-            export CC="ccache gcc"
-          fi
-          
-          # Create a build directory
+          # Create build directory
           BUILD_DIR="build_${{ matrix.target }}"
           mkdir -p $BUILD_DIR
           
-          # Try to extract config from build.config file
+          # Set up environment
+          export ARCH=${{ matrix.arch }}
+          if [ "$ARCH" = "arm64" ]; then
+            export CROSS_COMPILE=aarch64-linux-gnu-
+          elif [ "$ARCH" = "arm" ]; then
+            export CROSS_COMPILE=arm-linux-gnueabi-
+          fi
+          
+          # Try to find or create config
           if [ -f "${{ matrix.config }}" ]; then
-            echo "Using build config file: ${{ matrix.config }}"
-            
-            # Simple extraction of config options (you may need to adjust this)
-            grep -E "^CONFIG_" "${{ matrix.config }}" > $BUILD_DIR/.config || true
-            
-            # If no configs extracted, use defconfig
-            if [ ! -s "$BUILD_DIR/.config" ]; then
-              echo "No configs found in build.config, using defconfig..."
-              make O=$BUILD_DIR defconfig
-            else
-              # Use extracted config
-              cp $BUILD_DIR/.config $BUILD_DIR/.config.orig
+            echo "Found build config: ${{ matrix.config }}"
+            # Check if it contains CONFIG_* lines
+            if grep -q "^CONFIG_" "${{ matrix.config }}"; then
+              grep "^CONFIG_" "${{ matrix.config }}" > $BUILD_DIR/.config
+              echo "Extracted config from build.config file"
               make O=$BUILD_DIR olddefconfig
+            else
+              echo "No CONFIG_* lines found, trying to use as make target"
+              make O=$BUILD_DIR ${{ matrix.config }}
             fi
           else
-            # Use default defconfig
-            echo "Build config file not found, using defconfig..."
+            echo "Config file not found, trying defconfig..."
             make O=$BUILD_DIR defconfig
           fi
           
           # Build the kernel
-          echo "Building kernel with $(nproc) threads..."
+          echo "Building with $(nproc) threads..."
           make O=$BUILD_DIR -j$(nproc)
           
-          # Check if build was successful
-          if [ -f "$BUILD_DIR/arch/$ARCH/boot/Image" ] || [ -f "$BUILD_DIR/arch/$ARCH/boot/zImage" ] || [ -f "$BUILD_DIR/vmlinux" ]; then
-            echo "Kernel build successful!"
-            ls -la $BUILD_DIR/arch/$ARCH/boot/ 2>/dev/null || true
-          else
-            echo "Build artifacts not found!"
-            exit 1
+          # Verify build artifacts
+          echo "Checking for build artifacts..."
+          if [ "$ARCH" = "arm64" ]; then
+            if [ -f "$BUILD_DIR/arch/$ARCH/boot/Image" ]; then
+              echo "✓ Found Image: $BUILD_DIR/arch/$ARCH/boot/Image"
+              ls -lh "$BUILD_DIR/arch/$ARCH/boot/Image"
+            fi
+            if [ -f "$BUILD_DIR/arch/$ARCH/boot/Image.gz" ]; then
+              echo "✓ Found Image.gz"
+            fi
+          elif [ "$ARCH" = "arm" ]; then
+            if [ -f "$BUILD_DIR/arch/$ARCH/boot/zImage" ]; then
+              echo "✓ Found zImage"
+              ls -lh "$BUILD_DIR/arch/$ARCH/boot/zImage"
+            fi
+          fi
+          
+          if [ -f "$BUILD_DIR/vmlinux" ]; then
+            echo "✓ Found vmlinux"
+            ls -lh "$BUILD_DIR/vmlinux"
           fi
         fi
         
-        # Show ccache statistics
         ccache --show-stats
     
     - name: Archive build artifacts
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-${{ matrix.target }}-${{ github.sha }}
+        name: kernel-${{ matrix.target }}
         path: |
-          build_${{ matrix.target }}/arch/${{ matrix.arch }}/boot/
-          build_${{ matrix.target }}/vmlinux
-          build_${{ matrix.target }}/.config
+          build_${{ matrix.target }}/
         retention-days: 7
         if-no-files-found: warn
     
-    - name: Archive build logs
+    - name: Archive config files
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: build-logs-${{ matrix.target }}-${{ github.sha }}
+        name: configs-${{ matrix.target }}
         path: |
-          ${{ runner.temp }}/*.log
+          ${{ matrix.config }}
           build_${{ matrix.target }}/.config
-        retention-days: 7
-        if-no-files-found: ignore
-
-  # Optional: Create a release when tagged
-  release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-      
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-    
-    - name: Create release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: artifacts/**/*
-        generate_release_notes: true
+        retention-days: 30
