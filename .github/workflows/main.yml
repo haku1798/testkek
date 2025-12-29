@@ -1,0 +1,40 @@
+name: Build Android Kernel
+
+on:
+  # Allows manual triggering from the Actions tab
+  workflow_dispatch:
+  # Optional: Uncomment the lines below to also build on pushes to the main branch
+  # push:
+  #   branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          # This clones the repository containing this workflow file
+          path: kernel_source
+
+      - name: Build Android Kernel
+        uses: dabao1955/kernel_build_action@main[citation:3]
+        with:
+          # URL of the kernel to build. Change 'username' if you forked it.
+          kernel-url: https://github.com/haku1798/testkek
+          # Default branch; adjust if the source uses a different one.
+          kernel-branch: main
+          # !! KEY CONFIGURATION: You must find the correct defconfig name.
+          config: exynos9830_defconfig
+          arch: arm64
+          # Using AOSP's toolchain is standard for Android kernels[citation:3]
+          aosp-gcc: true
+          aosp-clang: true
+          # Set the Android version the kernel targets (e.g., 12, 13)
+          android-version: 12
+          # Packages the kernel into a flashable ZIP using AnyKernel3[citation:3]
+          anykernel3: true
+          # Automatically creates a GitHub release with the kernel
+          release: true
+          # The token is automatically provided by GitHub Actions
+          access-token: ${{ secrets.GITHUB_TOKEN }}
