@@ -40,11 +40,11 @@ jobs:
             config: 'build.config.x86_64'
             arch: 'x86_64'
     
-    # Skip builds for other matrix entries when a specific target is provided via workflow_dispatch
+    # Conditional logic for manual triggers
     if: |
-      github.event_name == 'workflow_dispatch' && github.event.inputs.build_target != ''
-      ? matrix.target == github.event.inputs.build_target
-      : true
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.build_target != '') 
+      && (matrix.target == github.event.inputs.build_target)
+      || (github.event_name != 'workflow_dispatch')
     
     steps:
     - name: Checkout repository
