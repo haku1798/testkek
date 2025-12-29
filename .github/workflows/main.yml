@@ -1,40 +1,254 @@
-name: Build Android Kernel
+name: Build Linux Kernel
 
 on:
-  # Allows manual triggering from the Actions tab
-  workflow_dispatch:
-  # Optional: Uncomment the lines below to also build on pushes to the main branch
-  # push:
-  #   branches: [ "main" ]
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:  # Allow manual triggers
+    inputs:
+      build_target:
+        description: 'Build target (e.g., gki.aarch64, universal3830)'
+        required: false
+        default: 'gki.aarch64'
+
+env:
+  # Common environment variables
+  BUILD_CONFIG: ${{ github.event.inputs.build_target || 'gki.aarch64' }}
+  CCACHE_DIR: /tmp/ccache
+  KBUILD_BUILD_USER: github-actions
+  KBUILD_BUILD_HOST: github-actions
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # Ubuntu 22.04 for better toolchain support
+    
+    strategy:
+      matrix:
+        target: ['gki.aarch64', 'universal3830', 'arm', 'x86_64']
+        include:
+          - target: 'gki.aarch64'
+            config: 'build.config.gki.aarch64'
+            arch: 'arm64'
+          - target: 'universal3830'
+            config: 'build.config.universal3830'
+            arch: 'arm64'
+          - target: 'arm'
+            config: 'build.config.arm'
+            arch: 'arm'
+          - target: 'x86_64'
+            config: 'build.config.x86_64'
+            arch: 'x86_64'
+    
+    # Skip builds for other matrix entries when a specific target is provided via workflow_dispatch
+    if: |
+      github.event_name == 'workflow_dispatch' && github.event.inputs.build_target != ''
+      ? matrix.target == github.event.inputs.build_target
+      : true
+    
     steps:
-      - name: Checkout kernel source
-        uses: actions/checkout@v4
-        with:
-          # This clones the repository containing this workflow file
-          path: kernel_source
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Full history for version info
+    
+    - name: Setup build environment
+      run: |
+        # Install essential build tools
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          bc \
+          bison \
+          flex \
+          libssl-dev \
+          libelf-dev \
+          rsync \
+          kmod \
+          cpio \
+          git \
+          python3 \
+          python3-pip \
+          lz4 \
+          lzop \
+          gcc-aarch64-linux-gnu \
+          gcc-arm-linux-gnueabi \
+          ccache
+        
+        # Install ccache
+        sudo apt-get install -y ccache
+        ccache --set-config=cache_dir=$CCACHE_DIR
+        ccache --set-config=max_size=2G
+        ccache --zero-stats
+        
+        # Create necessary symlinks
+        sudo ln -sf /usr/bin/python3 /usr/bin/python
+    
+    - name: Setup Android build tools (if needed)
+      if: contains(matrix.target, 'gki') || contains(matrix.target, 'universal')
+      run: |
+        # Install repo tool for Android kernel builds
+        mkdir -p ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        echo "$HOME/bin" >> $GITHUB_PATH
+        
+        # Install additional Android build dependencies
+        sudo apt-get install -y \
+          libncurses5-dev \
+          schedtool \
+          squashfs-tools \
+          pngquant
+        
+        # Install Python packages
+        pip3 install --user \
+          pyelftools \
+          'protobuf>=3.6.0' \
+          'absl-py>=0.2.2'
+    
+    - name: Show kernel version info
+      run: |
+        echo "Kernel version information:"
+        if [ -f "Makefile" ]; then
+          echo "Kernel version: $(head -5 Makefile | grep -E '^VERSION|^PATCHLEVEL|^SUBLEVEL' | xargs)"
+        fi
+        echo "Build configuration: ${{ matrix.config }}"
+        echo "Target architecture: ${{ matrix.arch }}"
+        ls -la build.config.* | head -10
+    
+    - name: Configure ccache
+      run: |
+        echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
+        echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
+        echo "CCACHE_MAXSIZE=2G" >> $GITHUB_ENV
+        
+        # Set up ccache for cross-compilation
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
+          echo "CCACHE_PREFIX=aarch64-linux-gnu-" >> $GITHUB_ENV
+        elif [ "${{ matrix.arch }}" = "arm" ]; then
+          echo "CCACHE_PREFIX=arm-linux-gnueabi-" >> $GITHUB_ENV
+        fi
+    
+    - name: Build kernel
+      timeout-minutes: 60  # Build timeout
+      run: |
+        set -e  # Exit on error
+        
+        echo "Starting kernel build for target: ${{ matrix.target }}"
+        echo "Using config: ${{ matrix.config }}"
+        
+        # Method 1: Try using build_kernel.sh if it exists
+        if [ -f "build_kernel.sh" ]; then
+          echo "Using build_kernel.sh script..."
+          chmod +x build_kernel.sh
+          
+          # Check if script supports our target
+          if ./build_kernel.sh --help 2>/dev/null | grep -q "config"; then
+            ./build_kernel.sh --config ${{ matrix.config }}
+          else
+            # Try with environment variable
+            BUILD_CONFIG=${{ matrix.config }} ./build_kernel.sh
+          fi
+        
+        # Method 2: Manual build using standard kernel build system
+        else
+          echo "build_kernel.sh not found, using manual build..."
+          
+          # Set architecture and cross-compiler
+          export ARCH=${{ matrix.arch }}
+          
+          if [ "$ARCH" = "arm64" ]; then
+            export CROSS_COMPILE=aarch64-linux-gnu-
+            export CC="ccache aarch64-linux-gnu-gcc"
+          elif [ "$ARCH" = "arm" ]; then
+            export CROSS_COMPILE=arm-linux-gnueabi-
+            export CC="ccache arm-linux-gnueabi-gcc"
+          else
+            export CC="ccache gcc"
+          fi
+          
+          # Create a build directory
+          BUILD_DIR="build_${{ matrix.target }}"
+          mkdir -p $BUILD_DIR
+          
+          # Try to extract config from build.config file
+          if [ -f "${{ matrix.config }}" ]; then
+            echo "Using build config file: ${{ matrix.config }}"
+            
+            # Simple extraction of config options (you may need to adjust this)
+            grep -E "^CONFIG_" "${{ matrix.config }}" > $BUILD_DIR/.config || true
+            
+            # If no configs extracted, use defconfig
+            if [ ! -s "$BUILD_DIR/.config" ]; then
+              echo "No configs found in build.config, using defconfig..."
+              make O=$BUILD_DIR defconfig
+            else
+              # Use extracted config
+              cp $BUILD_DIR/.config $BUILD_DIR/.config.orig
+              make O=$BUILD_DIR olddefconfig
+            fi
+          else
+            # Use default defconfig
+            echo "Build config file not found, using defconfig..."
+            make O=$BUILD_DIR defconfig
+          fi
+          
+          # Build the kernel
+          echo "Building kernel with $(nproc) threads..."
+          make O=$BUILD_DIR -j$(nproc)
+          
+          # Check if build was successful
+          if [ -f "$BUILD_DIR/arch/$ARCH/boot/Image" ] || [ -f "$BUILD_DIR/arch/$ARCH/boot/zImage" ] || [ -f "$BUILD_DIR/vmlinux" ]; then
+            echo "Kernel build successful!"
+            ls -la $BUILD_DIR/arch/$ARCH/boot/ 2>/dev/null || true
+          else
+            echo "Build artifacts not found!"
+            exit 1
+          fi
+        fi
+        
+        # Show ccache statistics
+        ccache --show-stats
+    
+    - name: Archive build artifacts
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-${{ matrix.target }}-${{ github.sha }}
+        path: |
+          build_${{ matrix.target }}/arch/${{ matrix.arch }}/boot/
+          build_${{ matrix.target }}/vmlinux
+          build_${{ matrix.target }}/.config
+        retention-days: 7
+        if-no-files-found: warn
+    
+    - name: Archive build logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-${{ matrix.target }}-${{ github.sha }}
+        path: |
+          ${{ runner.temp }}/*.log
+          build_${{ matrix.target }}/.config
+        retention-days: 7
+        if-no-files-found: ignore
 
-      - name: Build Android Kernel
-        uses: dabao1955/kernel_build_action@main[citation:3]
-        with:
-          # URL of the kernel to build. Change 'username' if you forked it.
-          kernel-url: https://github.com/haku1798/testkek
-          # Default branch; adjust if the source uses a different one.
-          kernel-branch: main
-          # !! KEY CONFIGURATION: You must find the correct defconfig name.
-          config: exynos9830_defconfig
-          arch: arm64
-          # Using AOSP's toolchain is standard for Android kernels[citation:3]
-          aosp-gcc: true
-          aosp-clang: true
-          # Set the Android version the kernel targets (e.g., 12, 13)
-          android-version: 12
-          # Packages the kernel into a flashable ZIP using AnyKernel3[citation:3]
-          anykernel3: true
-          # Automatically creates a GitHub release with the kernel
-          release: true
-          # The token is automatically provided by GitHub Actions
-          access-token: ${{ secrets.GITHUB_TOKEN }}
+  # Optional: Create a release when tagged
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+    
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: artifacts/**/*
+        generate_release_notes: true
