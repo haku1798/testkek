@@ -1,0 +1,123 @@
+name: Explore Kernel Repository
+
+on:
+  workflow_dispatch: # Manual trigger only
+
+jobs:
+  explore:
+    runs-on: ubuntu-latest
+    outputs:
+      defconfig-list: ${{ steps.find-configs.outputs.defconfig-list }}
+      build-config-list: ${{ steps.find-build-configs.outputs.build-config-list }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find critical defconfig files
+        id: find-configs
+        run: |
+          echo "=== DEFCONFIG FILE SEARCH ==="
+          echo "Searching for kernel configuration files..."
+          
+          # Look for defconfig files in standard ARM/ARM64 locations
+          echo "1. ARM64 defconfig files (most likely):"
+          find arch/arm64/configs -name "*defconfig" -type f 2>/dev/null | head -20
+          
+          echo ""
+          echo "2. ARM (32-bit) defconfig files:"
+          find arch/arm/configs -name "*defconfig" -type f 2>/dev/null | head -20
+          
+          echo ""
+          echo "3. Any other defconfig files in arch/:"
+          find arch -name "*defconfig" -type f 2>/dev/null | grep -v "arm64/configs\|arm/configs" | head -20
+          
+          # Store findings for potential use in later steps
+          DEFCONFIGS=$(find arch -name "*defconfig" -type f 2>/dev/null | head -50)
+          echo "defconfig-list<<EOF" >> $GITHUB_OUTPUT
+          echo "$DEFCONFIGS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Analyze build configuration files
+        id: find-build-configs
+        run: |
+          echo ""
+          echo "=== BUILD CONFIGURATION ANALYSIS ==="
+          echo "Repository contains these build.config files:"
+          ls -la build.config* 2>/dev/null || echo "No build.config files in root"
+          
+          echo ""
+          echo "First few lines of key build configs:"
+          for config in build.config.gki.aarch64 build.config.aarch64 build.config.arm; do
+            if [ -f "$config" ]; then
+              echo "===== $config ====="
+              head -20 "$config"
+              echo ""
+            fi
+          done
+          
+          # Store list for output
+          BUILDCONFIGS=$(ls build.config* 2>/dev/null || echo "None found")
+          echo "build-config-list<<EOF" >> $GITHUB_OUTPUT
+          echo "$BUILDCONFIGS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Check for build scripts and documentation
+        run: |
+          echo ""
+          echo "=== BUILD SCRIPTS & DOCUMENTATION ==="
+          
+          echo "1. Build scripts in root:"
+          ls -la *.sh *.mk Makefile Kbuild 2>/dev/null || echo "No common build files found"
+          
+          echo ""
+          echo "2. Looking for README or documentation:"
+          find . -maxdepth 2 -name "*README*" -o -name "*readme*" -o -name "*.md" | head -10
+          
+          echo ""
+          echo "3. Checking for platform indicators:"
+          echo "Kernel version from top-level Makefile:"
+          grep -E "^VERSION|^PATCHLEVEL|^SUBLEVEL" Makefile 2>/dev/null || echo "Cannot find version info"
+          
+          echo ""
+          echo "Possible target platforms from build.config names:"
+          ls build.config.* 2>/dev/null | sed 's/build.config\.//g' | sort | uniq
+
+      - name: Create summary report
+        if: always()
+        run: |
+          echo ""
+          echo "=== EXPLORATION SUMMARY ==="
+          echo "`date`"
+          echo ""
+          echo "Use the information above to identify the correct defconfig file."
+          echo ""
+          echo "Common defconfig naming patterns for Exynos platforms:"
+          echo "- exynos9830_defconfig"
+          echo "- universal9830_defconfig"
+          echo "- s5e9830_defconfig"
+          echo "- erd3830_defconfig"
+          echo ""
+          echo "Next step: Update your build workflow with the correct 'config:' parameter"
+          
+          # Save detailed summary to a file
+          echo "# Kernel Repository Exploration Report" > exploration-summary.md
+          echo "Generated: `date`" >> exploration-summary.md
+          echo "" >> exploration-summary.md
+          echo "## Defconfig Files Found" >> exploration-summary.md
+          echo '```' >> exploration-summary.md
+          find arch -name "*defconfig" -type f 2>/dev/null >> exploration-summary.md
+          echo '```' >> exploration-summary.md
+          echo "" >> exploration-summary.md
+          echo "## Build Configuration Files" >> exploration-summary.md
+          echo '```' >> exploration-summary.md
+          ls -la build.config* 2>/dev/null >> exploration-summary.md || echo "No build.config files" >> exploration-summary.md
+          echo '```' >> exploration-summary.md
+
+      - name: Upload exploration report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-exploration-report
+          path: |
+            exploration-summary.md
+          retention-days: 7
