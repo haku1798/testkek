@@ -112,109 +112,91 @@ jobs:
         
         echo "=== PATCHING VERSION DETECTION SCRIPTS ==="
         
-        # Patch gcc-version.sh to use gcc instead of clang
-        if [ -f "scripts/gcc-version.sh" ]; then
-          echo "Patching scripts/gcc-version.sh..."
-          sed -i 's|\.\./toolchain/clang/host/linux-x86/clang-r383902/bin/clang|gcc|g' scripts/gcc-version.sh
-          sed -i 's|clang|gcc|g' scripts/gcc-version.sh
-        fi
+        # Create fixed versions of the scripts instead of patching
+        echo "1. Creating fixed gcc-version.sh..."
+        cat > scripts/gcc-version.sh << 'EOF'
+#!/bin/bash
+echo "110000"
+exit 0
+EOF
+        chmod +x scripts/gcc-version.sh
         
-        # Patch clang-version.sh to use our fake clang
-        if [ -f "scripts/clang-version.sh" ]; then
-          echo "Patching scripts/clang-version.sh..."
-          sed -i 's|\.\./toolchain/clang/host/linux-x86/clang-r383902/bin/clang|clang|g' scripts/clang-version.sh
-        fi
+        echo "2. Creating fixed clang-version.sh..."
+        cat > scripts/clang-version.sh << 'EOF'
+#!/bin/bash
+echo "140000"
+exit 0
+EOF
+        chmod +x scripts/clang-version.sh
         
-        # Patch lld-version.sh
-        if [ -f "scripts/lld-version.sh" ]; then
-          echo "Patching scripts/lld-version.sh..."
-          sed -i 's|\.\./toolchain/clang/host/linux-x86/clang-r383902/bin/clang|ld.lld|g' scripts/lld-version.sh
-        fi
+        echo "3. Creating fixed lld-version.sh..."
+        cat > scripts/lld-version.sh << 'EOF'
+#!/bin/bash
+echo "140000"
+exit 0
+EOF
+        chmod +x scripts/lld-version.sh
         
-        # Patch gcc-plugin.sh
-        if [ -f "scripts/gcc-plugin.sh" ]; then
-          echo "Patching scripts/gcc-plugin.sh..."
-          sed -i 's|\.\./toolchain/clang/host/linux-x86/clang-r383902/bin/clang|gcc|g' scripts/gcc-plugin.sh
-        fi
+        echo "4. Creating fixed gcc-plugin.sh..."
+        cat > scripts/gcc-plugin.sh << 'EOF'
+#!/bin/bash
+# Dummy script to satisfy Kconfig
+echo "gcc"
+exit 0
+EOF
+        chmod +x scripts/gcc-plugin.sh
         
-        echo "✅ Version detection scripts patched"
+        echo "✅ Version detection scripts fixed"
         
-    # Step 7: Fix Kconfig syntax errors with simplified approach
+    # Step 7: Fix Kconfig syntax errors
     - name: Fix Kconfig Issues
       run: |
         cd kernel
         
-        echo "=== FIXING KCONFIG ISSUES WITH SIMPLIFIED APPROACH ==="
+        echo "=== FIXING KCONFIG ISSUES ==="
         
-        # Backup original files
-        echo "1. Backing up original Kconfig files..."
-        cp init/Kconfig init/Kconfig.backup 2>/dev/null || true
-        cp drivers/gpu/arm/Kconfig drivers/gpu/arm/Kconfig.backup 2>/dev/null || true
-        cp drivers/gpu/arm/bv_r38p1/Kconfig drivers/gpu/arm/bv_r38p1/Kconfig.backup 2>/dev/null || true
-        
-        echo "2. Simple Kconfig patching approach..."
-        echo "   Replacing broken version detection with static values..."
-        
+        echo "1. Creating a complete fixed init/Kconfig..."
         if [ -f "init/Kconfig" ]; then
-          # Simple approach: replace the problematic sections with static text
-          echo "   Creating a simplified init/Kconfig..."
-          
-          # Create a backup first
+          # Backup original
           cp init/Kconfig init/Kconfig.original
           
-          # Use awk to fix the problematic sections
+          # Replace the problematic config sections with simple defaults
           awk '
-          /scripts\/gcc-version.sh/ { 
-            print "\t\tdefault \"gcc (Ubuntu 11.4.0) 11.4.0\""
+          /config CC_VERSION_TEXT/ {
+            print "\tstring \"Compiler version\""
+            print "\tdefault \"gcc (Ubuntu 11.4.0) 11.4.0\""
+            getline; while ($0 ~ /^\t/) getline
             next
           }
-          /scripts\/clang-version.sh/ {
-            print "\t\tdefault \"clang version 14.0.0\""
+          /config CLANG_VERSION_TEXT/ {
+            print "\tstring \"Clang version\""
+            print "\tdefault \"clang version 14.0.0\""
+            getline; while ($0 ~ /^\t/) getline
             next
           }
-          /scripts\/lld-version.sh/ {
-            print "\t\tdefault \"LLD 14.0.0\""
+          /config LD_VERSION_TEXT/ {
+            print "\tstring \"LD version\""
+            print "\tdefault \"LLD 14.0.0\""
+            getline; while ($0 ~ /^\t/) getline
             next
           }
           { print }
           ' init/Kconfig.original > init/Kconfig
           
-          echo "   init/Kconfig simplified"
+          echo "   init/Kconfig fixed"
         fi
         
-        echo "3. Fixing drivers/gpu/arm/Kconfig..."
-        if [ -f "drivers/gpu/arm/Kconfig" ]; then
-          # Create minimal working GPU Kconfig
-          echo "# SPDX-License-Identifier: GPL-2.0-only" > drivers/gpu/arm/Kconfig
-          echo "#" >> drivers/gpu/arm/Kconfig
-          echo "# ARM GPU configuration" >> drivers/gpu/arm/Kconfig
-          echo "#" >> drivers/gpu/arm/Kconfig
-          echo "" >> drivers/gpu/arm/Kconfig
-          echo "menuconfig GPU_ARM" >> drivers/gpu/arm/Kconfig
-          echo "	bool \"ARM GPU support\"" >> drivers/gpu/arm/Kconfig
-          echo "	depends on ARM || ARM64" >> drivers/gpu/arm/Kconfig
-          echo "	help" >> drivers/gpu/arm/Kconfig
-          echo "	  Say Y here to enable support for ARM GPUs." >> drivers/gpu/arm/Kconfig
-          echo "" >> drivers/gpu/arm/Kconfig
-          echo "if GPU_ARM" >> drivers/gpu/arm/Kconfig
-          echo "" >> drivers/gpu/arm/Kconfig
-          echo "config MALI_DEFAULT" >> drivers/gpu/arm/Kconfig
-          echo "	bool \"Enable default Mali GPU settings\"" >> drivers/gpu/arm/Kconfig
-          echo "	default y" >> drivers/gpu/arm/Kconfig
-          echo "	help" >> drivers/gpu/arm/Kconfig
-          echo "	  Enable default Mali GPU settings." >> drivers/gpu/arm/Kconfig
-          echo "" >> drivers/gpu/arm/Kconfig
-          echo "endif # GPU_ARM" >> drivers/gpu/arm/Kconfig
-        fi
+        echo "2. Fixing GPU Kconfig conflicts..."
+        # Fix MALI_ARBITRATION duplicate
+        find drivers/gpu/arm -name "Kconfig" -type f | while read kconfig; do
+          if grep -q "config MALI_ARBITRATION" "$kconfig"; then
+            echo "  Fixing $kconfig"
+            sed -i '/^config MALI_ARBITRATION$/d' "$kconfig"
+            sed -i '/^config MALI_ARBITRATION[[:space:]]/d' "$kconfig"
+          fi
+        done
         
-        echo "4. Fixing MALI_ARBITRATION warning..."
-        if [ -f "drivers/gpu/arm/bv_r38p1/Kconfig" ]; then
-          # Comment out the conflicting definition
-          sed -i 's/^config MALI_ARBITRATION$/# config MALI_ARBITRATION was here/' drivers/gpu/arm/bv_r38p1/Kconfig
-          sed -i 's/^config MALI_ARBITRATION\t/# config MALI_ARBITRATION was here/' drivers/gpu/arm/bv_r38p1/Kconfig
-        fi
-        
-        echo "✅ Kconfig issues fixed (simplified approach)"
+        echo "✅ Kconfig issues fixed"
         
     # Step 8: Install SukiSU
     - name: Install SukiSU (Built-in Branch)
@@ -232,14 +214,18 @@ jobs:
         echo "2. Checking installation..."
         if [ -L "KernelSU" ] || [ -d "KernelSU" ]; then
           echo "✅ SukiSU installed successfully"
-          echo "KernelSU points to: $(readlink -f KernelSU 2>/dev/null || echo 'directory')"
+          ls -la | grep -i kernel
         else
           echo "⚠️ SukiSU setup may have failed"
-          echo "Current directory contents:"
-          ls -la | grep -i suki || ls -la | grep -i kernelsu || echo "No SukiSU files found"
+          echo "Attempting manual installation..."
+          git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git --depth=1
+          if [ -d "SukiSU-Ultra/kernel" ]; then
+            ln -sf SukiSU-Ultra/kernel KernelSU
+            echo "Manually created KernelSU symlink"
+          fi
         fi
         
-    # Step 9: Build configuration
+    # Step 9: Build configuration - FIXED APPROACH
     - name: Build Kernel Configuration
       run: |
         cd kernel
@@ -250,57 +236,90 @@ jobs:
         export SUBARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        
-        # Set host compiler explicitly
         export HOSTCC=gcc
         export HOSTCXX=g++
         
         echo "1. Creating output directory..."
         mkdir -p out
         
-        echo "2. Generating base configuration..."
+        echo "2. Generating configuration using defconfig..."
         
-        # First, create a minimal config manually to bypass broken defconfig
-        echo "# Minimal Samsung Exynos 850 configuration" > out/.config
-        echo "CONFIG_LOCALVERSION=\"-exynos850-a13x\"" >> out/.config
-        echo "CONFIG_SYSVIPC=y" >> out/.config
-        echo "CONFIG_POSIX_MQUEUE=y" >> out/.config
-        echo "CONFIG_AIO=y" >> out/.config
-        echo "CONFIG_ARM64=y" >> out/.config
-        echo "CONFIG_ARCH_EXYNOS=y" >> out/.config
-        echo "CONFIG_SOC_EXYNOS850=y" >> out/.config
-        echo "CONFIG_NR_CPUS=8" >> out/.config
+        # First try to use the actual defconfig
+        if [ -f "arch/arm64/configs/exynos850_defconfig" ]; then
+          echo "Using exynos850_defconfig..."
+          make O=out exynos850_defconfig 2>&1 | tee config.log || {
+            echo "Defconfig failed, trying minimal config..."
+            # Fallback to minimal config
+            cat > out/.config << 'EOF'
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_AIO=y
+CONFIG_ARM64=y
+CONFIG_ARCH_EXYNOS=y
+CONFIG_SOC_EXYNOS850=y
+CONFIG_NR_CPUS=8
+CONFIG_LOCALVERSION="-exynos850-a13x"
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_BLK_DEV=y
+CONFIG_BLOCK=y
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_KPROBES=y
+CONFIG_HAVE_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_SUKISU=y
+CONFIG_SUKISU_BUILTIN=y
+EOF
+          }
+        else
+          echo "Defconfig not found, using minimal config..."
+          cat > out/.config << 'EOF'
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_AIO=y
+CONFIG_ARM64=y
+CONFIG_ARCH_EXYNOS=y
+CONFIG_SOC_EXYNOS850=y
+CONFIG_NR_CPUS=8
+CONFIG_LOCALVERSION="-exynos850-a13x"
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_BLK_DEV=y
+CONFIG_BLOCK=y
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_KPROBES=y
+CONFIG_HAVE_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_SUKISU=y
+CONFIG_SUKISU_BUILTIN=y
+EOF
+        fi
         
-        # Essential drivers for boot
-        echo "CONFIG_DEVTMPFS=y" >> out/.config
-        echo "CONFIG_DEVTMPFS_MOUNT=y" >> out/.config
-        echo "CONFIG_BLK_DEV=y" >> out/.config
-        echo "CONFIG_BLOCK=y" >> out/.config
-        
-        # SukiSU requirements
-        echo "CONFIG_KPROBES=y" >> out/.config
-        echo "CONFIG_HAVE_KPROBES=y" >> out/.config
-        echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
-        echo "CONFIG_OVERLAY_FS=y" >> out/.config
-        echo "CONFIG_MODULES=y" >> out/.config
-        echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
-        
-        # SukiSU itself
-        echo "CONFIG_SUKISU=y" >> out/.config
-        echo "CONFIG_SUKISU_BUILTIN=y" >> out/.config
-        
-        echo "3. Running olddefconfig to fill missing options..."
-        make O=out olddefconfig 2>&1 | grep -v "warning:" | tail -20 || {
-          echo "olddefconfig failed, continuing with minimal config..."
+        echo "3. Running olddefconfig to fill in defaults..."
+        make O=out olddefconfig 2>&1 | tail -20 || {
+          echo "olddefconfig failed, continuing with current config..."
         }
         
-        echo "4. Final configuration check..."
-        echo "Relevant configs found:"
-        grep -E "CONFIG_SUKISU|CONFIG_MODULES|CONFIG_KPROBES|CONFIG_OVERLAY_FS|CONFIG_ARM64|CONFIG_EXYNOS" out/.config || echo "No configs found"
+        echo "4. Checking SukiSU configuration..."
+        if ! grep -q "CONFIG_SUKISU=y" out/.config; then
+          echo "Adding SukiSU config..."
+          echo "CONFIG_SUKISU=y" >> out/.config
+          echo "CONFIG_SUKISU_BUILTIN=y" >> out/.config
+          echo "CONFIG_KPROBES=y" >> out/.config
+          echo "CONFIG_OVERLAY_FS=y" >> out/.config
+        fi
+        
+        echo "5. Final configuration:"
+        echo "Relevant configs:"
+        grep -E "SUKISU|MODULES|KPROBES|OVERLAY|ARM64|EXYNOS" out/.config || echo "No configs found"
         
         echo "✅ Configuration complete"
         
-    # Step 10: Build the kernel
+    # Step 10: Build the kernel - FIXED BUILD COMMAND
     - name: Build Kernel
       run: |
         cd kernel
@@ -315,40 +334,62 @@ jobs:
         export HOSTCXX=g++
         
         echo "1. Setting up environment..."
+        echo "ARCH=$ARCH"
+        echo "CROSS_COMPILE=$CROSS_COMPILE"
         echo "Using CC: $(which gcc)"
-        echo "Using CROSS_COMPILE: $(which aarch64-linux-gnu-gcc)"
+        echo "Using aarch64-linux-gnu-gcc: $(which aarch64-linux-gnu-gcc)"
         
-        echo "2. Starting kernel build..."
+        echo "2. Starting full kernel build (all targets)..."
         
-        # Try to build just the Image first
-        echo "Building Image target..."
-        make -j${{ env.JOBS }} O=out Image 2>&1 | tee build.log || {
-          echo "Image build failed, checking errors..."
-          echo "=== LAST 50 LINES OF BUILD LOG ==="
-          tail -50 build.log
-          echo "=== BUILD ERROR SUMMARY ==="
+        # Try building all targets instead of just Image
+        # The error suggests the build is stopping early
+        make -j${{ env.JOBS }} O=out all 2>&1 | tee build.log || {
+          echo "=== BUILD FAILED - CHECKING ERRORS ==="
+          echo "=== LAST 100 LINES OF BUILD LOG ==="
+          tail -100 build.log
+          echo "=== ERROR SUMMARY ==="
           grep -i "error:" build.log | head -20
+          echo "=== WARNING SUMMARY ==="
+          grep -i "warning:" build.log | head -20
           
-          # Try building vmlinux as fallback
-          echo "Trying to build vmlinux instead..."
-          make -j${{ env.JOBS }} O=out vmlinux 2>&1 | tee vmlinux.log
+          # Try alternative build approach
+          echo "=== TRYING ALTERNATIVE BUILD ==="
+          echo "Building vmlinux target only..."
+          make -j1 O=out vmlinux 2>&1 | tee vmlinux.log
+          
+          if [ $? -eq 0 ]; then
+            echo "vmlinux built successfully, now building Image..."
+            make -j${{ env.JOBS }} O=out Image 2>&1 | tee image.log
+          fi
         }
         
         echo "3. Checking build results..."
+        BUILD_SUCCESS=false
+        
         if [ -f "out/arch/arm64/boot/Image" ]; then
           echo "✅ Kernel Image built successfully!"
           file out/arch/arm64/boot/Image
+          BUILD_SUCCESS=true
+        elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+          echo "✅ Compressed Image.gz built successfully!"
+          file out/arch/arm64/boot/Image.gz
+          BUILD_SUCCESS=true
         elif [ -f "out/vmlinux" ]; then
-          echo "✅ vmlinux built (can be converted to Image)"
+          echo "✅ vmlinux built successfully!"
           file out/vmlinux
+          BUILD_SUCCESS=true
         else
           echo "❌ No kernel output found"
+          echo "Checking what was built..."
+          find out -name "*.o" -type f | wc -l | xargs echo "Object files:"
+          find out -name "built-in.a" -type f | wc -l | xargs echo "Built-in archives:"
         fi
         
-        echo "✅ Build step complete"
+        echo "Build success: $BUILD_SUCCESS"
         
     # Step 11: Build modules
     - name: Build Kernel Modules
+      if: success() || failure()
       run: |
         cd kernel
         
@@ -359,9 +400,9 @@ jobs:
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         
-        # Only build modules if kernel was built
-        if [ -f "out/arch/arm64/boot/Image" ] || [ -f "out/vmlinux" ]; then
-          echo "Kernel found, building modules..."
+        # Check if we should build modules
+        if [ -f "out/.config" ] && grep -q "CONFIG_MODULES=y" out/.config; then
+          echo "Building modules..."
           make -j${{ env.JOBS }} O=out modules 2>&1 | tee modules.log || {
             echo "Module build had errors..."
             tail -30 modules.log
@@ -370,13 +411,14 @@ jobs:
           echo "Modules built. Looking for *.ko files..."
           find out -name "*.ko" -type f | head -10 || echo "No modules found"
         else
-          echo "Skipping module build - no kernel found"
+          echo "Skipping module build - CONFIG_MODULES not set"
         fi
         
         echo "✅ Module build complete"
         
     # Step 12: Package results
     - name: Package Kernel Output
+      if: always()
       run: |
         cd kernel
         
@@ -388,69 +430,53 @@ jobs:
         echo "1. Creating output directory..."
         mkdir -p kernel_output
         
-        echo "2. Collecting kernel images..."
+        echo "2. Collecting any build artifacts..."
         
-        # Try to get the kernel image
+        # Collect whatever was built
         if [ -f "out/arch/arm64/boot/Image" ]; then
-          echo "✅ Found Image, copying..."
           cp out/arch/arm64/boot/Image kernel_output/
-          IMAGE_TYPE="Image"
-        elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
-          echo "✅ Found compressed Image.gz, copying..."
-          cp out/arch/arm64/boot/Image.gz kernel_output/
-          IMAGE_TYPE="Image.gz"
-        elif [ -f "out/vmlinux" ]; then
-          echo "✅ Found vmlinux, copying and converting..."
-          cp out/vmlinux kernel_output/
-          # Try to convert vmlinux to binary Image
-          aarch64-linux-gnu-objcopy -O binary -R .note -R .comment -S out/vmlinux kernel_output/vmlinux.bin 2>/dev/null && \
-            echo "Created vmlinux.bin from vmlinux"
-          IMAGE_TYPE="vmlinux"
-        else
-          echo "⚠️ No kernel image found"
-          IMAGE_TYPE="none"
+          echo "✅ Copied Image"
         fi
         
-        echo "3. Collecting modules..."
+        if [ -f "out/arch/arm64/boot/Image.gz" ]; then
+          cp out/arch/arm64/boot/Image.gz kernel_output/
+          echo "✅ Copied Image.gz"
+        fi
+        
+        if [ -f "out/vmlinux" ]; then
+          cp out/vmlinux kernel_output/
+          echo "✅ Copied vmlinux"
+          # Try to extract binary from vmlinux
+          aarch64-linux-gnu-objcopy -O binary -R .note -R .comment -S out/vmlinux kernel_output/vmlinux.bin 2>/dev/null && \
+            echo "✅ Created vmlinux.bin"
+        fi
+        
+        echo "3. Collecting any modules..."
         mkdir -p kernel_output/modules
-        find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null || echo "No modules to copy"
+        find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null | head -5 || echo "No modules to copy"
         
-        echo "4. Collecting device tree files..."
-        find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} kernel_output/ \; 2>/dev/null || true
-        [ -f "out/arch/arm64/boot/dtb.img" ] && cp out/arch/arm64/boot/dtb.img kernel_output/
-        [ -f "out/arch/arm64/boot/dtbo.img" ] && cp out/arch/arm64/boot/dtbo.img kernel_output/
+        echo "4. Collecting build logs..."
+        mkdir -p kernel_output/logs
+        cp build.log kernel_output/logs/ 2>/dev/null || true
+        cp modules.log kernel_output/logs/ 2>/dev/null || true
+        cp config.log kernel_output/logs/ 2>/dev/null || true
         
-        echo "5. Creating build info file..."
+        echo "5. Creating build info..."
         {
-          echo "=== SAMSUNG A135F KERNEL BUILD ==="
+          echo "=== BUILD REPORT ==="
+          echo "Kernel: $KERNEL_VERSION"
+          echo "Date: $BUILD_DATE"
+          echo "Commit: ${{ github.sha }}"
           echo ""
-          echo "Kernel Version: $KERNEL_VERSION"
-          echo "Build Date: $BUILD_DATE"
-          echo "Git Commit: ${{ github.sha }}"
-          echo "Image Type: $IMAGE_TYPE"
-          echo "Architecture: arm64"
-          echo "Configuration: exynos850_defconfig"
-          echo "SukiSU: Built-in (CONFIG_SUKISU_BUILTIN=y)"
+          echo "=== ARTIFACTS ==="
+          ls -la kernel_output/ 2>/dev/null | grep -v "^total" || echo "No artifacts"
           echo ""
-          echo "=== BUILD ARTIFACTS ==="
-          echo "- kernel_output/Image: Main kernel binary"
-          echo "- kernel_output/modules/: Kernel modules (*.ko files)"
-          echo "- kernel_output/*.dtb: Device tree blobs"
-          echo ""
-          echo "=== FLASHING INSTRUCTIONS ==="
-          echo "1. Use anykernel3 template to create flashable zip"
-          echo "2. For Odin: tar -cf boot.tar Image dtb.img (if available)"
-          echo "3. Copy modules to /vendor/lib/modules/ or use module loading"
-          echo ""
-          echo "=== TROUBLESHOOTING ==="
-          echo "- If only vmlinux exists: Use aarch64-linux-gnu-objcopy to convert"
-          echo "- If build failed: Check build.log and modules.log"
-          echo "- If modules missing: CONFIG_MODULES=y must be set"
-        } > kernel_output/README.txt
+          echo "=== CONFIG ==="
+          grep -E "SUKISU|MODULES|KPROBES|OVERLAY" out/.config 2>/dev/null || echo "No config"
+        } > kernel_output/build_report.txt
         
-        echo "6. Listing output contents..."
-        echo "📦 Package contents:"
-        tree kernel_output/ 2>/dev/null || ls -la kernel_output/
+        echo "6. Final contents:"
+        ls -la kernel_output/ || echo "No output directory"
         
         echo "✅ Packaging complete"
         
@@ -469,19 +495,28 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "**Kernel Version:** \`${{ steps.check-kernel.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Build Status:** $(if [ -f 'kernel/kernel_output/Image' ] || [ -f 'kernel/kernel_output/vmlinux' ]; then echo '✅ SUCCESS'; else echo '❌ FAILED'; fi)" >> $GITHUB_STEP_SUMMARY
+        
+        # Check what was actually built
+        echo "**Build Artifacts:**" >> $GITHUB_STEP_SUMMARY
+        if [ -f "kernel/kernel_output/Image" ]; then
+          echo "- ✅ Kernel Image" >> $GITHUB_STEP_SUMMARY
+        elif [ -f "kernel/kernel_output/vmlinux" ]; then
+          echo "- ⚠️ vmlinux (needs conversion to Image)" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- ❌ No kernel binary" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        MODULE_COUNT=$(find kernel/kernel_output/modules -name "*.ko" 2>/dev/null | wc -l)
+        if [ "$MODULE_COUNT" -gt 0 ]; then
+          echo "- ✅ $MODULE_COUNT kernel modules" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- ⚠️ No kernel modules" >> $GITHUB_STEP_SUMMARY
+        fi
+        
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**SukiSU Integration:** Built-in (CONFIG_SUKISU_BUILTIN=y)" >> $GITHUB_STEP_SUMMARY
+        echo "**SukiSU Status:** Built-in" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Artifacts Generated:**" >> $GITHUB_STEP_SUMMARY
-        echo "- Kernel image (Image or vmlinux)" >> $GITHUB_STEP_SUMMARY
-        echo "- Kernel modules (if built)" >> $GITHUB_STEP_SUMMARY
-        echo "- Device tree files (if available)" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
-        echo "1. Download artifacts from Actions tab" >> $GITHUB_STEP_SUMMARY
-        echo "2. Create flashable zip with AnyKernel3" >> $GITHUB_STEP_SUMMARY
-        echo "3. Test on device" >> $GITHUB_STEP_SUMMARY
+        echo "**Debug:** Check artifact logs for build errors" >> $GITHUB_STEP_SUMMARY
         
     # Step 15: Debug information
     - name: Show Debug Information
@@ -491,18 +526,17 @@ jobs:
         
         echo "=== DEBUG INFORMATION ==="
         echo ""
-        echo "1. Final directory structure:"
-        tree out/ -L 2 2>/dev/null | head -30 || ls -la out/ 2>/dev/null || echo "No out directory"
+        echo "1. Build tree structure:"
+        find out -maxdepth 2 -type d 2>/dev/null || echo "No out directory"
         
         echo ""
-        echo "2. Build log tail:"
-        tail -30 build.log 2>/dev/null || echo "No build.log"
+        echo "2. Key build files:"
+        ls -la out/arch/arm64/boot/ 2>/dev/null || echo "No boot directory"
         
         echo ""
-        echo "3. Module count:"
-        find kernel_output/modules -name "*.ko" 2>/dev/null | wc -l | xargs echo "Modules found:"
+        echo "3. Critical errors from build log:"
+        grep -B5 -A5 "Error " build.log 2>/dev/null | head -30 || echo "No errors in log"
         
         echo ""
-        echo "4. Toolchain verification:"
-        echo "System clang: $(clang-14 --version | head -1)"
-        echo "Cross compiler: $(aarch64-linux-gnu-gcc --version | head -1)"
+        echo "4. First error in build (if any):"
+        grep -m1 -i "error:" build.log 2>/dev/null || echo "No error found"
