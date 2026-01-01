@@ -20,31 +20,23 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
-    # Step 1: Checkout kernel source
     - name: Checkout Kernel Source
       uses: actions/checkout@v4
       with:
         path: kernel
         
-    # Step 2: Check kernel version
     - name: Check Kernel Version
       id: check-kernel
       run: |
         cd kernel
-        
-        # Extract kernel version from Makefile
         VERSION=$(grep '^VERSION =' Makefile | head -1 | awk '{print $3}')
         PATCHLEVEL=$(grep '^PATCHLEVEL =' Makefile | head -1 | awk '{print $3}')
         SUBLEVEL=$(grep '^SUBLEVEL =' Makefile | head -1 | awk '{print $3}')
         EXTRAVERSION=$(grep '^EXTRAVERSION =' Makefile | head -1 | awk '{print $3}')
-        
         KERNEL_VERSION="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}${EXTRAVERSION}"
         echo "Kernel Version: $KERNEL_VERSION"
         echo "version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
-        echo "major=$VERSION" >> $GITHUB_OUTPUT
-        echo "patchlevel=$PATCHLEVEL" >> $GITHUB_OUTPUT
         
-    # Step 3: Setup environment
     - name: Setup Environment
       run: |
         sudo apt-get update
@@ -55,15 +47,47 @@ jobs:
           python3 python3-pip bc lz4 lzop xxd wget \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
         
-    # Step 4: Fix script permissions
-    - name: Fix Kernel Script Permissions
+    - name: Fix Toolchain Issues
+      run: |
+        cd kernel
+        
+        echo "Fixing Samsung kernel toolchain issues..."
+        
+        # 1. Create the expected toolchain directory structure
+        mkdir -p toolchain/clang/host/linux-x86/clang-r383902/bin
+        
+        # 2. Install clang-14 and create symlinks to match expected names
+        sudo apt-get install -y clang-14 llvm-14
+        
+        # 3. Create symlinks for the expected clang toolchain
+        ln -sf /usr/bin/clang-14 toolchain/clang/host/linux-x86/clang-r383902/bin/clang
+        ln -sf /usr/bin/clang++-14 toolchain/clang/host/linux-x86/clang-r383902/bin/clang++
+        
+        echo "Created toolchain symlinks"
+        
+    - name: Fix Script Permissions
       run: |
         cd kernel
         echo "Fixing script permissions..."
         chmod +x scripts/*.sh 2>/dev/null || true
+        chmod +x scripts/* 2>/dev/null || true
         find . -name "*.sh" -type f -exec chmod +x {} \; 2>/dev/null || true
         
-    # Step 5: Install SukiSU - This is the step you were trying to add
+        # Fix specific problematic scripts
+        if [ -f "scripts/gcc-version.sh" ]; then
+          echo "Patching gcc-version.sh to use system clang..."
+          # Make a backup
+          cp scripts/gcc-version.sh scripts/gcc-version.sh.backup
+          # Patch to use system clang instead of hardcoded path
+          sed -i 's|\.\./toolchain/clang/host/linux-x86/clang-r383902/bin/clang|clang|g' scripts/gcc-version.sh 2>/dev/null || true
+        fi
+        
+        if [ -f "scripts/clang-version.sh" ]; then
+          echo "Patching clang-version.sh..."
+          cp scripts/clang-version.sh scripts/clang-version.sh.backup
+          sed -i 's|\.\./toolchain/clang/host/linux-x86/clang-r383902/bin/clang|clang|g' scripts/clang-version.sh 2>/dev/null || true
+        fi
+        
     - name: Install SukiSU (Built-in Branch)
       run: |
         cd kernel
@@ -80,113 +104,131 @@ jobs:
         echo "Checking created files..."
         if [ -L "KernelSU" ] || [ -d "KernelSU" ]; then
           echo "✅ SukiSU setup script completed successfully"
-          echo "KernelSU points to: $(readlink -f KernelSU 2>/dev/null || echo 'KernelSU directory')"
         else
           echo "⚠️ Setup script may not have created expected structure"
           echo "Current directory contents:"
           ls -la | grep -i suki || ls -la | grep -i kernelsu || echo "No SukiSU/KernelSU files visible"
-          
-          # Try to find what was created
-          echo "Looking for any SukiSU related files..."
-          find . -type d -name "*suki*" -o -name "*kernelsu*" 2>/dev/null | head -10
         fi
         
-    # Step 6: Configure kernel with SukiSU
+    - name: Patch Makefile for GCC Build
+      run: |
+        cd kernel
+        
+        echo "Patching Makefile to use GCC instead of missing Clang..."
+        
+        # Create backup of original Makefile
+        cp Makefile Makefile.backup
+        
+        # Patch to use GCC for host builds
+        sed -i 's|HOSTCC\t= \$(CROSS_COMPILE)gcc|HOSTCC\t= gcc|g' Makefile 2>/dev/null || true
+        sed -i 's|HOSTCXX\t= \$(CROSS_COMPILE)g++|HOSTCXX\t= g++|g' Makefile 2>/dev/null || true
+        
+        # Check if there are hardcoded clang paths in the Makefile
+        if grep -q "clang-r383902" Makefile; then
+          echo "Found hardcoded clang-r383902 paths, patching..."
+          sed -i 's|\.\./toolchain/clang/host/linux-x86/clang-r383902/bin/clang|gcc|g' Makefile 2>/dev/null || true
+        fi
+        
+        echo "Makefile patched for GCC build"
+        
     - name: Configure Kernel with SukiSU
       run: |
         cd kernel
         
-        export ARCH=${{ env.ARCH }}
-        export SUBARCH=${{ env.SUBARCH }}
+        export ARCH=arm64
+        export SUBARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         
-        # Create output directory and generate base .config
+        # Set host compiler to GCC explicitly
+        export HOSTCC=gcc
+        export HOSTCXX=g++
+        
+        echo "Using host compiler: $(which gcc)"
+        
+        # Create output directory
         mkdir -p out
-        make O=out ${{ env.CONFIG }}
+        
+        echo "Generating base configuration with GCC..."
+        
+        # Generate config with GCC
+        make O=out exynos850_defconfig HOSTCC=gcc HOSTCXX=g++
         
         echo "Configuring for SukiSU (built-in module)..."
         
-        # Check if SukiSU setup script already modified the config
-        # If not, we'll add the necessary configs
-        if ! grep -q "CONFIG_SUKISU" out/.config 2>/dev/null; then
-          echo "Adding SukiSU configuration manually..."
-          
-          # 1. Enable absolute prerequisites
-          echo "CONFIG_KPROBES=y" >> out/.config
-          echo "CONFIG_HAVE_KPROBES=y" >> out/.config
-          echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
-          echo "CONFIG_OVERLAY_FS=y" >> out/.config
-          
-          # 2. Enable module support
-          echo "CONFIG_MODULES=y" >> out/.config
-          echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
-          
-          # 3. Configure SukiSU for built-in
-          echo "CONFIG_SUKISU=y" >> out/.config
-          echo "CONFIG_SUKISU_BUILTIN=y" >> out/.config
-        else
-          echo "SukiSU configuration already present, ensuring built-in..."
-          # Ensure it's set to built-in (y) not module (m)
-          sed -i 's/CONFIG_SUKISU=m/CONFIG_SUKISU=y/g' out/.config 2>/dev/null
-          echo "CONFIG_SUKISU_BUILTIN=y" >> out/.config
-        fi
+        # Add SukiSU configuration
+        echo "CONFIG_KPROBES=y" >> out/.config
+        echo "CONFIG_HAVE_KPROBES=y" >> out/.config
+        echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
+        echo "CONFIG_OVERLAY_FS=y" >> out/.config
+        echo "CONFIG_MODULES=y" >> out/.config
+        echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
+        echo "CONFIG_SUKISU=y" >> out/.config
+        echo "CONFIG_SUKISU_BUILTIN=y" >> out/.config
         
-        # 4. Update the config with new options
-        make O=out olddefconfig
+        # Update configuration
+        make O=out olddefconfig HOSTCC=gcc HOSTCXX=g++
         
-        echo "Kernel configuration for SukiSU complete."
+        echo "Kernel configuration complete."
         echo "Relevant configs:"
-        grep -E "CONFIG_SUKISU|CONFIG_MODULES|CONFIG_KPROBES|CONFIG_OVERLAY_FS" out/.config || echo "No SukiSU configs found"
+        grep -E "CONFIG_SUKISU|CONFIG_MODULES|CONFIG_KPROBES" out/.config || true
         
-    # Step 7: Build kernel
     - name: Build Kernel
       run: |
         cd kernel
         
-        export ARCH=${{ env.ARCH }}
-        export SUBARCH=${{ env.SUBARCH }}
+        export ARCH=arm64
+        export SUBARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+        export HOSTCC=gcc
+        export HOSTCXX=g++
         
         echo "Starting kernel build with GCC..."
-        echo "Using toolchain: $(aarch64-linux-gnu-gcc --version | head -n1)"
+        echo "Using host compiler: $(which gcc)"
+        echo "Using cross compiler: $(which aarch64-linux-gnu-gcc)"
         
-        # Build the kernel with GCC (Samsung kernels usually build with GCC)
-        make -j${{ env.JOBS }} O=out
+        # Build with verbose output to see any errors
+        make -j${{ env.JOBS }} O=out V=1 2>&1 | tee build.log || {
+          echo "Build failed, showing last 100 lines:"
+          tail -100 build.log
+          exit 1
+        }
         
         echo "Kernel build completed!"
         
-    # Step 8: Build modules
-    - name: Build Kernel Modules
+        # Check for output
+        ls -la out/arch/arm64/boot/ 2>/dev/null || echo "Checking for output files..."
+        
+    - name: Build Modules
       run: |
         cd kernel
         
-        export ARCH=${{ env.ARCH }}
-        export SUBARCH=${{ env.SUBARCH }}
+        export ARCH=arm64
+        export SUBARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         
-        echo "Building kernel modules..."
-        make -j${{ env.JOBS }} O=out modules
+        echo "Building modules..."
+        make -j${{ env.JOBS }} O=out modules 2>&1 | tee modules.log
         
-    # Step 9: Verify build
-    - name: Verify SukiSU Integration
+    - name: Verify Build
       run: |
         cd kernel
         
-        echo "Verifying build..."
-        if [ -f "out/arch/arm64/boot/Image" ] || [ -f "out/arch/arm64/boot/Image.gz" ]; then
-          echo "✅ Kernel image created"
+        echo "Verifying build output..."
+        
+        if [ -f "out/arch/arm64/boot/Image" ]; then
+          echo "✅ Kernel Image found: out/arch/arm64/boot/Image"
+          file out/arch/arm64/boot/Image
+        elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+          echo "✅ Compressed Kernel Image found: out/arch/arm64/boot/Image.gz"
         else
           echo "❌ No kernel image found!"
+          echo "Generated files in out/arch/arm64/boot/:"
+          ls -la out/arch/arm64/boot/ 2>/dev/null || echo "Directory not found"
         fi
         
-        if grep -q "CONFIG_SUKISU=y" out/.config 2>/dev/null; then
-          echo "✅ SukiSU enabled in config"
-        fi
-        
-    # Step 10: Package kernel
     - name: Package Kernel
       run: |
         cd kernel
@@ -197,15 +239,19 @@ jobs:
         # Copy kernel image
         if [ -f "out/arch/arm64/boot/Image" ]; then
           cp out/arch/arm64/boot/Image kernel_output/
+          echo "✅ Copied kernel Image"
         elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
           cp out/arch/arm64/boot/Image.gz kernel_output/
+          echo "✅ Copied compressed kernel Image"
         fi
         
         # Copy modules
         mkdir -p kernel_output/modules
         find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null || true
         
-    # Step 11: Upload artifacts
+        echo "Package created in kernel_output/"
+        ls -la kernel_output/
+        
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
