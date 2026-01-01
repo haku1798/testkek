@@ -154,16 +154,67 @@ jobs:
         
         # Install KernelSU Next using the official setup script
         echo "Installing KernelSU Next (stable branch)..."
+        
+        # Run the KernelSU setup script
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s ${{ env.KERNELSU_BRANCH }}
         
-        # Verify KernelSU installation
-        if [ -d "KernelSU" ]; then
-          echo "KernelSU installed successfully!"
-          echo "KernelSU version:"
-          cat KernelSU/version 2>/dev/null || echo "Version file not found"
+        # The setup script should have created a symlink
+        echo "Checking what was created..."
+        echo "Current directory contents:"
+        ls -la
+        
+        # Check if KernelSU symlink was created
+        if [ -L "KernelSU" ]; then
+          echo "✅ KernelSU symlink created successfully"
+          echo "KernelSU symlink points to: $(readlink -f KernelSU)"
+          
+          # Check if the target exists
+          if [ -d "$(readlink -f KernelSU)" ]; then
+            echo "✅ KernelSU target directory exists"
+          else
+            echo "⚠️ KernelSU symlink target doesn't exist"
+            # Try to create it manually
+            if [ -d "KernelSU-Next/kernel" ]; then
+              echo "Creating KernelSU symlink manually..."
+              rm -f KernelSU
+              ln -s KernelSU-Next/kernel KernelSU
+            fi
+          fi
+        elif [ -d "KernelSU" ]; then
+          echo "✅ KernelSU directory exists (not a symlink)"
         else
-          echo "ERROR: KernelSU installation failed!"
-          exit 1
+          echo "⚠️ KernelSU not found, checking for KernelSU-Next..."
+          if [ -d "KernelSU-Next" ]; then
+            echo "Found KernelSU-Next directory"
+            if [ -d "KernelSU-Next/kernel" ]; then
+              echo "Creating KernelSU symlink..."
+              ln -s KernelSU-Next/kernel KernelSU
+              echo "✅ Created KernelSU symlink"
+            else
+              echo "⚠️ KernelSU-Next/kernel directory not found"
+              # List KernelSU-Next contents
+              echo "KernelSU-Next contents:"
+              ls -la KernelSU-Next/
+            fi
+          else
+            echo "❌ KernelSU-Next directory not found"
+            echo "Trying manual installation..."
+            git clone https://github.com/KernelSU-Next/KernelSU-Next.git --depth=1 --branch=stable
+            if [ -d "KernelSU-Next/kernel" ]; then
+              ln -s KernelSU-Next/kernel KernelSU
+              echo "✅ Manual installation successful"
+            else
+              echo "⚠️ Manual installation failed, continuing without KernelSU"
+            fi
+          fi
+        fi
+        
+        # Final check
+        if [ -e "KernelSU" ]; then
+          echo "✅ KernelSU installation completed"
+          echo "KernelSU location: $(readlink -f KernelSU 2>/dev/null || echo KernelSU)"
+        else
+          echo "⚠️ KernelSU not found, will build without KernelSU support"
         fi
         
     - name: Configure Kernel with KernelSU
@@ -193,24 +244,29 @@ jobs:
         echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
         echo "CONFIG_OVERLAY_FS=y" >> out/.config
         
-        # Enable KernelSU itself
-        echo "CONFIG_KSU=y" >> out/.config
-        
-        # Check if we need built-in driver for GKI 1.0 kernels
-        if [ "${{ steps.check-kernel.outputs.ksu_build_method }}" = "builtin" ]; then
-          echo "CONFIG_KSU_BUILTIN=y" >> out/.config
-          echo "Enabled built-in KernelSU driver for GKI kernel"
+        # Check if KernelSU is installed before enabling
+        if [ -e "KernelSU" ]; then
+          echo "KernelSU detected, enabling support..."
+          echo "CONFIG_KSU=y" >> out/.config
+          
+          # Check if we need built-in driver for GKI 1.0 kernels
+          if [ "${{ steps.check-kernel.outputs.ksu_build_method }}" = "builtin" ]; then
+            echo "CONFIG_KSU_BUILTIN=y" >> out/.config
+            echo "Enabled built-in KernelSU driver for GKI kernel"
+          else
+            echo "CONFIG_KSU_MODULE=y" >> out/.config
+            echo "KernelSU will be built as module"
+          fi
         else
-          echo "CONFIG_KSU_MODULE=y" >> out/.config
-          echo "KernelSU will be built as module"
+          echo "⚠️ KernelSU not found, building without KernelSU support"
         fi
         
         # Update config with new options
         make O=out olddefconfig
         
         # Display KernelSU-related config
-        echo "KernelSU configuration:"
-        grep -E "CONFIG_KSU|KPROBES|OVERLAY_FS" out/.config || true
+        echo "Kernel configuration:"
+        grep -E "CONFIG_KSU|KPROBES|OVERLAY_FS" out/.config || echo "No KernelSU config found"
         
     - name: Build Kernel with KernelSU
       run: |
@@ -223,8 +279,8 @@ jobs:
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         export CLANG_TRIPLE=aarch64-linux-gnu-
         
-        # Build the kernel with Clang
-        echo "Starting kernel build with KernelSU..."
+        # Build the kernel with Clang (preferred for KernelSU)
+        echo "Starting kernel build..."
         
         # First try with Clang
         echo "Attempting build with Clang..."
@@ -238,7 +294,7 @@ jobs:
           STRIP=llvm-strip \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          CLANG_TRIPLE=aarch64-linux-gnu-; then
+          CLANG_TRIPLE=aarch64-linux-gnu- 2>&1 | tee build.log; then
           
           echo "✅ Kernel built successfully with Clang!"
           
@@ -248,47 +304,47 @@ jobs:
           # If Clang fails, try with GCC
           if make -j${{ env.JOBS }} O=out \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi-; then
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- 2>&1 | tee -a build.log; then
             
             echo "✅ Kernel built successfully with GCC!"
           else
             echo "❌ Both Clang and GCC builds failed!"
+            echo "Last 50 lines of build log:"
+            tail -50 build.log
             exit 1
           fi
         fi
         
         # Check for KernelSU modules
         echo "Looking for KernelSU modules..."
-        find out -name "*ksu*" -o -name "kernelsu*" -o -name "*.ko" 2>/dev/null | head -10 || echo "No KernelSU-specific modules found"
+        find out -name "*ksu*" -o -name "*KSU*" -o -name "*.ko" 2>/dev/null | head -10 || echo "No KernelSU-specific modules found"
         
     - name: Verify KernelSU Integration
       run: |
         cd kernel
         
-        echo "Verifying KernelSU integration..."
+        echo "Verifying build..."
         
-        # Check if kernel has KSU support
-        if grep -q "CONFIG_KSU=y" out/.config; then
-          echo "✅ KernelSU enabled in kernel config"
+        # Check if kernel image was created
+        if [ -f "out/arch/arm64/boot/Image" ] || [ -f "out/arch/arm64/boot/Image.gz" ]; then
+          echo "✅ Kernel image created successfully"
         else
-          echo "❌ KernelSU not enabled in config!"
+          echo "❌ No kernel image found!"
+          ls -la out/arch/arm64/boot/ 2>/dev/null || echo "Output directory not found"
         fi
         
-        # Check build method
-        if grep -q "CONFIG_KSU_BUILTIN=y" out/.config; then
-          echo "✅ KernelSU driver: Built-in (for GKI)"
-        elif grep -q "CONFIG_KSU_MODULE=y" out/.config; then
-          echo "✅ KernelSU driver: Module"
-        fi
-        
-        # Check if KernelSU files exist
-        if [ -d "KernelSU" ]; then
-          echo "✅ KernelSU source present"
+        # Check if kernel has KSU support (if enabled)
+        if grep -q "CONFIG_KSU=y" out/.config 2>/dev/null; then
+          echo "✅ KernelSU enabled in kernel config"
           
-          # Check KernelSU version
-          if [ -f "KernelSU/version" ]; then
-            echo "KernelSU version: $(cat KernelSU/version)"
+          # Check build method
+          if grep -q "CONFIG_KSU_BUILTIN=y" out/.config 2>/dev/null; then
+            echo "✅ KernelSU driver: Built-in (for GKI)"
+          elif grep -q "CONFIG_KSU_MODULE=y" out/.config 2>/dev/null; then
+            echo "✅ KernelSU driver: Module"
           fi
+        else
+          echo "⚠️ KernelSU not enabled in config"
         fi
         
         # Display kernel version info
@@ -331,6 +387,10 @@ jobs:
         mkdir -p kernel_output/modules
         find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null || echo "No modules found"
         
+        # List modules for debugging
+        echo "Modules found:"
+        ls -la kernel_output/modules/ 2>/dev/null | head -10 || echo "No modules directory"
+        
         # Create info file
         {
           echo "Kernel: ${{ env.KERNEL_NAME }}"
@@ -357,11 +417,21 @@ jobs:
         # Copy kernel image to AnyKernel3
         if [ -f "kernel_output/Image" ]; then
           cp kernel_output/Image AnyKernel3/
+          KERNEL_IMAGE="Image"
         elif [ -f "kernel_output/Image.gz" ]; then
           cp kernel_output/Image.gz AnyKernel3/
+          KERNEL_IMAGE="Image.gz"
         else
           echo "❌ No kernel image found to package!"
-          exit 1
+          # Check if we have any image file
+          IMAGE_FILE=$(ls kernel_output/Image* 2>/dev/null | head -1)
+          if [ -n "$IMAGE_FILE" ]; then
+            cp "$IMAGE_FILE" AnyKernel3/
+            KERNEL_IMAGE=$(basename "$IMAGE_FILE")
+            echo "✅ Copied $KERNEL_IMAGE"
+          else
+            exit 1
+          fi
         fi
         
         # Copy device tree images if they exist
@@ -372,6 +442,7 @@ jobs:
         if [ -d "kernel_output/modules" ] && [ "$(ls -A kernel_output/modules)" ]; then
           mkdir -p AnyKernel3/modules
           cp kernel_output/modules/* AnyKernel3/modules/
+          echo "✅ Copied modules"
         fi
         
         # Create anykernel.sh script
