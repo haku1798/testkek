@@ -48,21 +48,14 @@ jobs:
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
           clang-14 llvm-14 tree file
         
-    - name: FIX ALL SCRIPT PERMISSIONS (Critical Step)
+    - name: FIX ALL SCRIPT PERMISSIONS
       run: |
         cd kernel
         
         echo "=== FIXING SCRIPT PERMISSIONS ==="
-        
-        # First, make absolutely EVERY script executable
-        echo "1. Making all *.sh files executable..."
         find . -name "*.sh" -type f -exec chmod +x {} \; 2>/dev/null
-        
-        echo "2. Making scripts directory fully executable..."
         chmod -R +x scripts/ 2>/dev/null
         
-        echo "3. Making specific problematic scripts executable..."
-        # List of scripts that showed permission denied
         PROBLEMATIC_SCRIPTS="
           scripts/clang-android.sh
           scripts/gcc-version.sh
@@ -73,22 +66,10 @@ jobs:
         
         for script in $PROBLEMATIC_SCRIPTS; do
           if [ -f "$script" ]; then
-            echo "  Fixing: $script"
             chmod +x "$script"
-            # Also fix potential line endings
             sed -i 's/\r$//' "$script" 2>/dev/null
-          else
-            echo "  Not found: $script"
           fi
         done
-        
-        echo "4. Checking/fixing toolchain scripts..."
-        if [ -d "toolchain" ]; then
-          find toolchain -name "*.sh" -exec chmod +x {} \; 2>/dev/null
-        fi
-        
-        echo "5. Final permission check..."
-        ls -la scripts/*.sh 2>/dev/null | head -10
         
     - name: Fix Kconfig Issues
       run: |
@@ -141,29 +122,27 @@ jobs:
         # Fix the GPU Kconfig syntax error by simplifying it
         if [ -f "drivers/gpu/arm/Kconfig" ]; then
           echo "   Simplifying drivers/gpu/arm/Kconfig..."
-          # Create a minimal working version
-          cat > drivers/gpu/arm/Kconfig << 'EOF'
-# SPDX-License-Identifier: GPL-2.0-only
-#
-# ARM GPU configuration
-#
-
-menuconfig GPU_ARM
-	bool "ARM GPU support"
-	depends on ARM || ARM64
-	help
-	  Say Y here to enable support for ARM GPUs.
-
-if GPU_ARM
-
-config MALI_DEFAULT
-	bool "Enable default Mali GPU settings"
-	default y
-	help
-	  Enable default Mali GPU settings.
-
-endif # GPU_ARM
-EOF
+          # Create a minimal working version using echo commands instead of heredoc
+          echo "# SPDX-License-Identifier: GPL-2.0-only" > drivers/gpu/arm/Kconfig
+          echo "#" >> drivers/gpu/arm/Kconfig
+          echo "# ARM GPU configuration" >> drivers/gpu/arm/Kconfig
+          echo "#" >> drivers/gpu/arm/Kconfig
+          echo "" >> drivers/gpu/arm/Kconfig
+          echo "menuconfig GPU_ARM" >> drivers/gpu/arm/Kconfig
+          echo "	bool \"ARM GPU support\"" >> drivers/gpu/arm/Kconfig
+          echo "	depends on ARM || ARM64" >> drivers/gpu/arm/Kconfig
+          echo "	help" >> drivers/gpu/arm/Kconfig
+          echo "	  Say Y here to enable support for ARM GPUs." >> drivers/gpu/arm/Kconfig
+          echo "" >> drivers/gpu/arm/Kconfig
+          echo "if GPU_ARM" >> drivers/gpu/arm/Kconfig
+          echo "" >> drivers/gpu/arm/Kconfig
+          echo "config MALI_DEFAULT" >> drivers/gpu/arm/Kconfig
+          echo "	bool \"Enable default Mali GPU settings\"" >> drivers/gpu/arm/Kconfig
+          echo "	default y" >> drivers/gpu/arm/Kconfig
+          echo "	help" >> drivers/gpu/arm/Kconfig
+          echo "	  Enable default Mali GPU settings." >> drivers/gpu/arm/Kconfig
+          echo "" >> drivers/gpu/arm/Kconfig
+          echo "endif # GPU_ARM" >> drivers/gpu/arm/Kconfig
         fi
         
         echo "4. Fixing MALI_ARBITRATION warning..."
@@ -180,10 +159,7 @@ EOF
         cd kernel
         
         echo "=== INSTALLING SUKISU ==="
-        
-        # Remove any previous KernelSU/SukiSU attempts
         rm -rf KernelSU SukiSU kernelsu
-        
         echo "1. Running SukiSU setup script..."
         curl -LSs 'https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh' | bash -s builtin
         
@@ -199,45 +175,38 @@ EOF
         cd kernel
         
         echo "=== SIMPLE DIRECT BUILD ==="
-        
-        # Clean environment
         export ARCH=arm64
         export SUBARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        
-        # Create output directory
         mkdir -p out
         
         echo "1. Creating minimal config manually..."
-        
-        # Create a bare minimum config that should work
-        cat > out/.config << 'EOF'
-# Minimal Exynos 850 config
-CONFIG_LOCALVERSION="-exynos850-a13x"
-CONFIG_SYSVIPC=y
-CONFIG_POSIX_MQUEUE=y
-CONFIG_AIO=y
-CONFIG_ARM64=y
-CONFIG_ARCH_EXYNOS=y
-CONFIG_SOC_EXYNOS850=y
-CONFIG_NR_CPUS=8
-CONFIG_HZ_100=y
-CONFIG_THUMB2_KERNEL=n
-CONFIG_ARM64_PAGE_SHIFT=12
-CONFIG_ARM64_CONT_SHIFT=4
-CONFIG_ARCH_MMAP_RND_BITS=18
-CONFIG_ARCH_MMAP_RND_COMPAT_BITS=11
-CONFIG_KPROBES=y
-CONFIG_HAVE_KPROBES=y
-CONFIG_KPROBE_EVENTS=y
-CONFIG_OVERLAY_FS=y
-CONFIG_MODULES=y
-CONFIG_MODULE_UNLOAD=y
-# SukiSU
-CONFIG_SUKISU=y
-CONFIG_SUKISU_BUILTIN=y
-EOF
+        # Create a bare minimum config using echo commands
+        echo "# Minimal Exynos 850 config" > out/.config
+        echo "CONFIG_LOCALVERSION=\"-exynos850-a13x\"" >> out/.config
+        echo "CONFIG_SYSVIPC=y" >> out/.config
+        echo "CONFIG_POSIX_MQUEUE=y" >> out/.config
+        echo "CONFIG_AIO=y" >> out/.config
+        echo "CONFIG_ARM64=y" >> out/.config
+        echo "CONFIG_ARCH_EXYNOS=y" >> out/.config
+        echo "CONFIG_SOC_EXYNOS850=y" >> out/.config
+        echo "CONFIG_NR_CPUS=8" >> out/.config
+        echo "CONFIG_HZ_100=y" >> out/.config
+        echo "CONFIG_THUMB2_KERNEL=n" >> out/.config
+        echo "CONFIG_ARM64_PAGE_SHIFT=12" >> out/.config
+        echo "CONFIG_ARM64_CONT_SHIFT=4" >> out/.config
+        echo "CONFIG_ARCH_MMAP_RND_BITS=18" >> out/.config
+        echo "CONFIG_ARCH_MMAP_RND_COMPAT_BITS=11" >> out/.config
+        echo "CONFIG_KPROBES=y" >> out/.config
+        echo "CONFIG_HAVE_KPROBES=y" >> out/.config
+        echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
+        echo "CONFIG_OVERLAY_FS=y" >> out/.config
+        echo "CONFIG_MODULES=y" >> out/.config
+        echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
+        echo "# SukiSU" >> out/.config
+        echo "CONFIG_SUKISU=y" >> out/.config
+        echo "CONFIG_SUKISU_BUILTIN=y" >> out/.config
         
         echo "2. Running olddefconfig to fill in defaults..."
         make O=out olddefconfig 2>&1 | grep -v "warning:" || true
@@ -254,15 +223,12 @@ EOF
     - name: Build Modules if Kernel Built
       run: |
         cd kernel
-        
         echo "=== BUILDING MODULES ==="
-        
         export ARCH=arm64
         export SUBARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         
-        # Only build modules if kernel was built
         if [ -f "out/arch/arm64/boot/Image" ] || [ -f "out/vmlinux" ]; then
           echo "Kernel was built, building modules..."
           make -j${{ env.JOBS }} O=out modules 2>&1 | tee modules.log || echo "Module build failed"
@@ -273,15 +239,11 @@ EOF
     - name: Package Results
       run: |
         cd kernel
-        
         echo "=== PACKAGING RESULTS ==="
-        
         KERNEL_VERSION="${{ steps.check-kernel.outputs.version }}"
         mkdir -p kernel_output
         
         echo "Looking for build artifacts..."
-        
-        # Check for various output files
         if [ -f "out/arch/arm64/boot/Image" ]; then
           echo "✅ Found kernel Image"
           cp out/arch/arm64/boot/Image kernel_output/
@@ -296,29 +258,23 @@ EOF
         if [ -f "out/vmlinux" ]; then
           echo "✅ Found vmlinux"
           cp out/vmlinux kernel_output/
-          # Try to create Image from vmlinux
           aarch64-linux-gnu-objcopy -O binary -R .note -R .comment -S out/vmlinux kernel_output/vmlinux.bin 2>/dev/null && \
             echo "Created vmlinux.bin from vmlinux"
         fi
         
-        # Copy modules if any
         mkdir -p kernel_output/modules
         find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null || true
         
-        # List what we have
         echo "Final artifacts:"
         ls -la kernel_output/
         
-        # Create build info
-        {
-          echo "Build attempt for Samsung A135F"
-          echo "Kernel: $KERNEL_VERSION"
-          echo "Date: $(date)"
-          echo "Git SHA: ${{ github.sha }}"
-          echo ""
-          echo "If Image file exists, it may be flashable."
-          echo "If only vmlinux exists, more work is needed."
-        } > kernel_output/README.txt
+        echo "Build attempt for Samsung A135F" > kernel_output/README.txt
+        echo "Kernel: $KERNEL_VERSION" >> kernel_output/README.txt
+        echo "Date: $(date)" >> kernel_output/README.txt
+        echo "Git SHA: ${{ github.sha }}" >> kernel_output/README.txt
+        echo "" >> kernel_output/README.txt
+        echo "If Image file exists, it may be flashable." >> kernel_output/README.txt
+        echo "If only vmlinux exists, more work is needed." >> kernel_output/README.txt
         
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
@@ -330,15 +286,12 @@ EOF
       if: always()
       run: |
         cd kernel
-        
         echo "=== DEBUG INFORMATION ==="
         echo "Last 20 lines of build.log:"
         tail -20 build.log 2>/dev/null || echo "No build.log"
-        
         echo ""
         echo "Tree structure of out/ directory:"
         tree out/ -L 3 2>/dev/null | head -50 || ls -la out/ 2>/dev/null || echo "No out/ directory"
-        
         echo ""
         echo "Script permissions:"
         ls -la scripts/*.sh 2>/dev/null | head -10
