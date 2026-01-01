@@ -1,0 +1,420 @@
+name: Build Kernel with KernelSU Next (Stable)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  KERNEL_NAME: a13x
+  ARCH: arm64
+  SUBARCH: arm64
+  CONFIG: exynos850_defconfig
+  TOOLCHAIN_VERSION: proton-clang-14
+  CLANG_VERSION: 14.0.0
+  JOBS: 4
+  KERNELSU_BRANCH: stable
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v4
+      with:
+        path: kernel
+        
+    - name: Check Kernel Version and GKI Status
+      id: check-kernel
+      run: |
+        cd kernel
+        
+        # Extract kernel version from Makefile
+        VERSION=$(grep '^VERSION =' Makefile | head -1 | awk '{print $3}')
+        PATCHLEVEL=$(grep '^PATCHLEVEL =' Makefile | head -1 | awk '{print $3}')
+        SUBLEVEL=$(grep '^SUBLEVEL =' Makefile | head -1 | awk '{print $3}')
+        EXTRAVERSION=$(grep '^EXTRAVERSION =' Makefile | head -1 | awk '{print $3}')
+        
+        KERNEL_VERSION="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}${EXTRAVERSION}"
+        echo "Kernel Version: $KERNEL_VERSION"
+        echo "version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
+        echo "major=$VERSION" >> $GITHUB_OUTPUT
+        echo "patchlevel=$PATCHLEVEL" >> $GITHUB_OUTPUT
+        
+        # Check if this is a GKI kernel
+        echo "Checking for GKI configuration..."
+        
+        # Method 1: Check config file
+        if [ -f "arch/arm64/configs/${{ env.CONFIG }}" ]; then
+          if grep -q "CONFIG_ANDROID_ABI" arch/arm64/configs/${{ env.CONFIG }}; then
+            IS_GKI="true"
+            echo "Found CONFIG_ANDROID_ABI - This is a GKI kernel"
+          elif grep -q "CONFIG_ANDROID_GKI" arch/arm64/configs/${{ env.CONFIG }}; then
+            IS_GKI="true"
+            echo "Found CONFIG_ANDROID_GKI - This is a GKI kernel"
+          elif grep -q "GKI" arch/arm64/configs/${{ env.CONFIG }}; then
+            IS_GKI="true"
+            echo "Found GKI references in config - This is likely a GKI kernel"
+          else
+            IS_GKI="false"
+            echo "No GKI indicators found - This is NOT a GKI kernel"
+          fi
+        else
+          IS_GKI="false"
+          echo "Config file not found, assuming non-GKI"
+        fi
+        
+        # Method 2: Check kernel version range for GKI 1.0
+        if [ "$VERSION" -eq 4 ] && [ "$PATCHLEVEL" -ge 19 ] && [ "$PATCHLEVEL" -le 20 ]; then
+          GKI_VERSION="1.0"
+          echo "Kernel $KERNEL_VERSION is in GKI 1.0 range (4.19-4.20)"
+        elif [ "$VERSION" -eq 5 ] && [ "$PATCHLEVEL" -le 4 ]; then
+          GKI_VERSION="1.0"
+          echo "Kernel $KERNEL_VERSION is in GKI 1.0 range (5.0-5.4)"
+        elif [ "$VERSION" -eq 5 ] && [ "$PATCHLEVEL" -ge 10 ]; then
+          GKI_VERSION="2.0"
+          echo "Kernel $KERNEL_VERSION is likely GKI 2.0+"
+        else
+          GKI_VERSION="unknown"
+        fi
+        
+        echo "is_gki=$IS_GKI" >> $GITHUB_OUTPUT
+        echo "gki_version=$GKI_VERSION" >> $GITHUB_OUTPUT
+        
+        # Determine KernelSU build method
+        if [ "$IS_GKI" = "true" ] || [ "$GKI_VERSION" = "1.0" ]; then
+          KSU_BUILD_METHOD="builtin"
+          echo "KernelSU driver will be built-in (required for GKI kernels)"
+        else
+          KSU_BUILD_METHOD="module"
+          echo "KernelSU driver will be built as module"
+        fi
+        
+        echo "ksu_build_method=$KSU_BUILD_METHOD" >> $GITHUB_OUTPUT
+        
+    - name: Setup Environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          git ccache automake flex lzop bison \
+          gperf build-essential zip curl zlib1g-dev \
+          g++-multilib libxml2-utils bzip2 libbz2-dev \
+          libbz2-1.0 libghc-bzlib-dev squashfs-tools \
+          pngcrush schedtool dpkg-dev liblz4-tool \
+          make optipng maven libssl-dev pwgen libswitch-perl \
+          patchelf bc libstdc++6 libncurses5 wget \
+          python3 python3-pip python-dev libffi-dev \
+          libxml2-dev libxslt1-dev libjpeg8-dev openjdk-11-jdk \
+          libtinfo5  # Added for newer ncurses compatibility
+          
+    - name: Install Toolchain
+      run: |
+        cd /tmp
+        # Install Proton Clang (recommended for KernelSU)
+        wget https://github.com/kdrag0n/proton-clang/archive/refs/tags/20220501.tar.gz -O proton-clang.tar.gz
+        tar -xzf proton-clang.tar.gz
+        mv proton-clang-20220501 /opt/proton-clang
+        rm proton-clang.tar.gz
+        
+        # Also install aarch64 gcc for cross-compilation
+        sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+        
+    - name: Set up CCache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: kernel-ksu-build-${{ env.KERNEL_NAME }}
+        max-size: 500M
+        
+    - name: Install KernelSU Next (Stable)
+      run: |
+        cd kernel
+        
+        # Install KernelSU Next using the official setup script
+        echo "Installing KernelSU Next (stable branch)..."
+        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s ${{ env.KERNELSU_BRANCH }}
+        
+        # Verify KernelSU installation
+        if [ -d "KernelSU" ]; then
+          echo "KernelSU installed successfully!"
+          echo "KernelSU version:"
+          cat KernelSU/version 2>/dev/null || echo "Version file not found"
+        else
+          echo "ERROR: KernelSU installation failed!"
+          exit 1
+        fi
+        
+    - name: Configure Kernel with KernelSU
+      run: |
+        cd kernel
+        
+        export PATH="/opt/proton-clang/bin:${PATH}"
+        export ARCH=${{ env.ARCH }}
+        export SUBARCH=${{ env.SUBARCH }}
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        
+        # Create output directory and generate .config
+        mkdir -p out
+        make O=out ${{ env.CONFIG }}
+        
+        # Enable KernelSU based on kernel version and GKI status
+        echo "Configuring KernelSU options..."
+        
+        # Always enable these for KernelSU
+        echo "CONFIG_KPROBES=y" >> out/.config
+        echo "CONFIG_HAVE_KPROBES=y" >> out/.config
+        echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
+        echo "CONFIG_OVERLAY_FS=y" >> out/.config
+        
+        # Enable KernelSU itself
+        echo "CONFIG_KSU=y" >> out/.config
+        
+        # Check if we need built-in driver for GKI 1.0 kernels
+        if [ "${{ steps.check-kernel.outputs.ksu_build_method }}" = "builtin" ]; then
+          echo "CONFIG_KSU_BUILTIN=y" >> out/.config
+          echo "Enabled built-in KernelSU driver for GKI kernel"
+        else
+          echo "CONFIG_KSU_MODULE=y" >> out/.config
+          echo "KernelSU will be built as module"
+        fi
+        
+        # Update config with new options
+        make O=out olddefconfig
+        
+        # Display KernelSU-related config
+        echo "KernelSU configuration:"
+        grep -E "CONFIG_KSU|KPROBES|OVERLAY_FS" out/.config || true
+        
+    - name: Build Kernel with KernelSU
+      run: |
+        cd kernel
+        
+        export PATH="/opt/proton-clang/bin:${PATH}"
+        export ARCH=${{ env.ARCH }}
+        export SUBARCH=${{ env.SUBARCH }}
+        
+        # Build the kernel
+        echo "Starting kernel build with KernelSU..."
+        make -j${{ env.JOBS }} O=out \
+          CC=clang \
+          LD=ld.lld \
+          AR=llvm-ar \
+          NM=llvm-nm \
+          OBJCOPY=llvm-objcopy \
+          OBJDUMP=llvm-objdump \
+          STRIP=llvm-strip \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          CLANG_TRIPLE=aarch64-linux-gnu-
+          
+        echo "Kernel build completed!"
+        
+        # Check for KernelSU modules
+        echo "Looking for KernelSU modules..."
+        find out -name "*ksu*" -o -name "kernelsu*" 2>/dev/null || echo "No KernelSU-specific modules found"
+        
+    - name: Verify KernelSU Integration
+      run: |
+        cd kernel
+        
+        echo "Verifying KernelSU integration..."
+        
+        # Check if kernel has KSU support
+        if grep -q "CONFIG_KSU=y" out/.config; then
+          echo "✅ KernelSU enabled in kernel config"
+        else
+          echo "❌ KernelSU not enabled in config!"
+        fi
+        
+        # Check build method
+        if grep -q "CONFIG_KSU_BUILTIN=y" out/.config; then
+          echo "✅ KernelSU driver: Built-in (for GKI)"
+        elif grep -q "CONFIG_KSU_MODULE=y" out/.config; then
+          echo "✅ KernelSU driver: Module"
+        fi
+        
+        # Check if KernelSU files exist
+        if [ -d "KernelSU" ]; then
+          echo "✅ KernelSU source present"
+          
+          # Check KernelSU version
+          if [ -f "KernelSU/version" ]; then
+            echo "KernelSU version: $(cat KernelSU/version)"
+          fi
+        fi
+        
+        # Display kernel version info
+        echo "Built kernel info:"
+        if [ -f "out/include/generated/utsrelease.h" ]; then
+          grep UTS_RELEASE out/include/generated/utsrelease.h || true
+        fi
+        
+    - name: Package Kernel Image
+      run: |
+        cd kernel
+        
+        KERNEL_VERSION="${{ steps.check-kernel.outputs.version }}"
+        BUILD_DATE=$(date +%Y%m%d-%H%M)
+        
+        mkdir -p kernel_output
+        
+        # Copy built images
+        cp out/arch/arm64/boot/Image kernel_output/Image
+        cp out/arch/arm64/boot/dtb.img kernel_output/ 2>/dev/null || true
+        cp out/arch/arm64/boot/dtbo.img kernel_output/ 2>/dev/null || true
+        
+        # Copy all kernel modules
+        mkdir -p kernel_output/modules
+        find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null || true
+        
+        # Create info file
+        cat > kernel_output/build-info.txt << EOF
+Kernel: ${{ env.KERNEL_NAME }}
+Version: $KERNEL_VERSION
+Architecture: ${{ env.ARCH }}
+Config: ${{ env.CONFIG }}
+Toolchain: ${{ env.TOOLCHAIN_VERSION }}
+KernelSU: Next (${{ env.KERNELSU_BRANCH }} branch)
+Build Method: ${{ steps.check-kernel.outputs.ksu_build_method }}
+GKI Status: ${{ steps.check-kernel.outputs.is_gki }} (${{ steps.check-kernel.outputs.gki_version }})
+Build Date: $(date)
+Git Commit: ${{ github.sha }}
+EOF
+        
+    - name: Create AnyKernel3 Flashable Zip
+      run: |
+        cd kernel
+        
+        KERNEL_VERSION="${{ steps.check-kernel.outputs.version }}"
+        SHORT_SHA=${GITHUB_SHA::7}
+        
+        git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
+        
+        # Copy kernel image to AnyKernel3
+        cp kernel_output/Image AnyKernel3/
+        
+        # Copy device tree images if they exist
+        [ -f "kernel_output/dtb.img" ] && cp kernel_output/dtb.img AnyKernel3/
+        [ -f "kernel_output/dtbo.img" ] && cp kernel_output/dtbo.img AnyKernel3/
+        
+        # Copy modules
+        if [ -d "kernel_output/modules" ] && [ "$(ls -A kernel_output/modules)" ]; then
+          mkdir -p AnyKernel3/modules
+          cp kernel_output/modules/* AnyKernel3/modules/
+        fi
+        
+        # Create anykernel.sh script
+        cat > AnyKernel3/anykernel.sh << 'EOF'
+        #!/system/bin/sh
+        # AnyKernel3 Ramdisk Mod Script
+        # osm0sis @ xda-developers
+        
+        ## AnyKernel setup
+        # begin properties
+        properties() {
+        kernel.string=KernelSU-Next-A135F
+        do.devicecheck=1
+        do.modules=1
+        do.systemless=1
+        do.cleanup=1
+        do.cleanuponabort=0
+        device.name1=a13
+        device.name2=A135F
+        device.name3=a135f
+        device.name4=a13x
+        }
+        
+        ## AnyKernel install
+        # begin attributes
+        attributes() {
+        set_perm_recursive 0 0 755 644 $ramdisk/*;
+        }
+        
+        # shell variables
+        block=/dev/block/by-name/boot;
+        is_slot_device=0;
+        ramdisk_compression=auto;
+        
+        . tools/ak3-core.sh;
+        
+        ## AnyKernel file attributes
+        # set permissions/ownership for included ramdisk files
+        set_perm_recursive 0 0 755 644 $ramdisk/*;
+        set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
+        
+        # Install KernelSU modules if present
+        if [ -d "$home/modules" ]; then
+          ui_print "Installing KernelSU modules...";
+          mkdir -p /data/adb/modules;
+          cp -rf $home/modules/* /data/adb/modules/;
+          set_perm_recursive 0 0 755 644 /data/adb/modules/*;
+        fi
+        
+        ui_print "Kernel with KernelSU Next installed successfully!";
+        EOF
+        
+        # Create update-binary
+        mkdir -p AnyKernel3/META-INF/com/google/android
+        cat > AnyKernel3/META-INF/com/google/android/update-binary << 'EOF'
+        #!/sbin/sh
+        # AnyKernel3 Update Binary
+        
+        OUTFD=$2;
+        ZIP=$3;
+        
+        ui_print() {
+          echo -e "ui_print $1\nui_print" > /proc/self/fd/$OUTFD;
+        }
+        
+        ui_print "Flashing KernelSU Next kernel...";
+        ui_print "Device: Samsung A135F";
+        ui_print "Kernel version: $KERNEL_VERSION";
+        
+        . /tmp/anykernel/tools/ak3-core.sh;
+        EOF
+        
+        chmod +x AnyKernel3/anykernel.sh
+        chmod +x AnyKernel3/META-INF/com/google/android/update-binary
+        
+        # Create zip
+        cd AnyKernel3
+        ZIP_NAME="KernelSU-Next-A135F-${KERNEL_VERSION}-${SHORT_SHA}.zip"
+        zip -r9 "../$ZIP_NAME" * -x .git README.md
+        
+        echo "Created flashable zip: $ZIP_NAME"
+        
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-${{ env.KERNEL_NAME }}-${{ github.sha }}
+        path: |
+          kernel/kernel_output/
+          kernel/KernelSU-Next-A135F-*.zip
+          
+    - name: Create Build Summary
+      run: |
+        echo "## Kernel Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Kernel Version:** \`${{ steps.check-kernel.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**GKI Status:** ${{ steps.check-kernel.outputs.is_gki }}" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ steps.check-kernel.outputs.is_gki }}" = "true" ]; then
+          echo "GKI Version: ${{ steps.check-kernel.outputs.gki_version }}" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**KernelSU Integration:**" >> $GITHUB_STEP_SUMMARY
+        echo "- Branch: ${{ env.KERNELSU_BRANCH }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Build Method: ${{ steps.check-kernel.outputs.ksu_build_method }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Artifacts Generated:**" >> $GITHUB_STEP_SUMMARY
+        echo "- Raw kernel images and modules" >> $GITHUB_STEP_SUMMARY
+        echo "- Flashable AnyKernel3 zip" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Build Details:**" >> $GITHUB_STEP_SUMMARY
+        echo "- Toolchain: ${{ env.TOOLCHAIN_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Config: ${{ env.CONFIG }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Architecture: ${{ env.ARCH }}" >> $GITHUB_STEP_SUMMARY
