@@ -105,45 +105,28 @@ jobs:
         
         echo "✅ Script permissions fixed"
         
-    # Step 6: Patch version detection scripts
+    # Step 6: Patch version detection scripts (FIXED YAML SYNTAX)
     - name: Patch Version Detection Scripts
       run: |
         cd kernel
         
         echo "=== PATCHING VERSION DETECTION SCRIPTS ==="
         
-        # Create fixed versions of the scripts instead of patching
+        # Create fixed versions of the scripts using printf
         echo "1. Creating fixed gcc-version.sh..."
-        cat > scripts/gcc-version.sh << 'EOF'
-#!/bin/bash
-echo "110000"
-exit 0
-EOF
+        printf '#!/bin/bash\necho "110000"\nexit 0\n' > scripts/gcc-version.sh
         chmod +x scripts/gcc-version.sh
         
         echo "2. Creating fixed clang-version.sh..."
-        cat > scripts/clang-version.sh << 'EOF'
-#!/bin/bash
-echo "140000"
-exit 0
-EOF
+        printf '#!/bin/bash\necho "140000"\nexit 0\n' > scripts/clang-version.sh
         chmod +x scripts/clang-version.sh
         
         echo "3. Creating fixed lld-version.sh..."
-        cat > scripts/lld-version.sh << 'EOF'
-#!/bin/bash
-echo "140000"
-exit 0
-EOF
+        printf '#!/bin/bash\necho "140000"\nexit 0\n' > scripts/lld-version.sh
         chmod +x scripts/lld-version.sh
         
         echo "4. Creating fixed gcc-plugin.sh..."
-        cat > scripts/gcc-plugin.sh << 'EOF'
-#!/bin/bash
-# Dummy script to satisfy Kconfig
-echo "gcc"
-exit 0
-EOF
+        printf '#!/bin/bash\n# Dummy script to satisfy Kconfig\necho "gcc"\nexit 0\n' > scripts/gcc-plugin.sh
         chmod +x scripts/gcc-plugin.sh
         
         echo "✅ Version detection scripts fixed"
