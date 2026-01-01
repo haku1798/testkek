@@ -1,4 +1,4 @@
-name: Build Kernel with KernelSU Next (Stable)
+name: Build Samsung A135F Kernel with SukiSU
 
 on:
   push:
@@ -14,7 +14,6 @@ env:
   CONFIG: exynos850_defconfig
   TOOLCHAIN_VERSION: gcc-12
   JOBS: 4
-  KERNELSU_BRANCH: stable
 
 jobs:
   build:
@@ -26,7 +25,7 @@ jobs:
       with:
         path: kernel
         
-    - name: Check Kernel Version and GKI Status
+    - name: Check Kernel Version
       id: check-kernel
       run: |
         cd kernel
@@ -43,287 +42,144 @@ jobs:
         echo "major=$VERSION" >> $GITHUB_OUTPUT
         echo "patchlevel=$PATCHLEVEL" >> $GITHUB_OUTPUT
         
-        # Check if this is a GKI kernel
-        echo "Checking for GKI configuration..."
-        
-        # Method 1: Check config file
-        if [ -f "arch/arm64/configs/${{ env.CONFIG }}" ]; then
-          if grep -q "CONFIG_ANDROID_ABI" arch/arm64/configs/${{ env.CONFIG }}; then
-            IS_GKI="true"
-            echo "Found CONFIG_ANDROID_ABI - This is a GKI kernel"
-          elif grep -q "CONFIG_ANDROID_GKI" arch/arm64/configs/${{ env.CONFIG }}; then
-            IS_GKI="true"
-            echo "Found CONFIG_ANDROID_GKI - This is a GKI kernel"
-          elif grep -q "GKI" arch/arm64/configs/${{ env.CONFIG }}; then
-            IS_GKI="true"
-            echo "Found GKI references in config - This is likely a GKI kernel"
-          else
-            IS_GKI="false"
-            echo "No GKI indicators found - This is NOT a GKI kernel"
-          fi
-        else
-          IS_GKI="false"
-          echo "Config file not found, assuming non-GKI"
-        fi
-        
-        # Method 2: Check kernel version range for GKI 1.0
-        if [ "$VERSION" -eq 4 ] && [ "$PATCHLEVEL" -ge 19 ] && [ "$PATCHLEVEL" -le 20 ]; then
-          GKI_VERSION="1.0"
-          echo "Kernel $KERNEL_VERSION is in GKI 1.0 range (4.19-4.20)"
-        elif [ "$VERSION" -eq 5 ] && [ "$PATCHLEVEL" -le 4 ]; then
-          GKI_VERSION="1.0"
-          echo "Kernel $KERNEL_VERSION is in GKI 1.0 range (5.0-5.4)"
-        elif [ "$VERSION" -eq 5 ] && [ "$PATCHLEVEL" -ge 10 ]; then
-          GKI_VERSION="2.0"
-          echo "Kernel $KERNEL_VERSION is likely GKI 2.0+"
-        else
-          GKI_VERSION="unknown"
-        fi
-        
-        echo "is_gki=$IS_GKI" >> $GITHUB_OUTPUT
-        echo "gki_version=$GKI_VERSION" >> $GITHUB_OUTPUT
-        
-        # Determine KernelSU build method
-        if [ "$IS_GKI" = "true" ] || [ "$GKI_VERSION" = "1.0" ]; then
-          KSU_BUILD_METHOD="builtin"
-          echo "KernelSU driver will be built-in (required for GKI kernels)"
-        else
-          KSU_BUILD_METHOD="module"
-          echo "KernelSU driver will be built as module"
-        fi
-        
-        echo "ksu_build_method=$KSU_BUILD_METHOD" >> $GITHUB_OUTPUT
+        echo "Building non-GKI Samsung kernel with SukiSU (built-in)"
         
     - name: Setup Environment
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          git ccache automake flex lzop bison \
-          gperf build-essential zip curl zlib1g-dev \
-          g++-multilib libxml2-utils bzip2 libbz2-dev \
-          libbz2-1.0 libghc-bzlib-dev squashfs-tools \
-          pngcrush schedtool dpkg-dev liblz4-tool \
-          make optipng maven libssl-dev pwgen libswitch-perl \
-          patchelf bc libstdc++6 libncurses5 wget \
-          python3 python3-pip python3-dev libffi-dev \
-          libxml2-dev libxslt1-dev libjpeg8-dev openjdk-11-jdk \
-          libtinfo5 libelf-dev libncurses-dev \
-          rsync cpio unzip kmod
-          
-    - name: Install Toolchain
+          git ccache build-essential zip curl \
+          libssl-dev libelf-dev libncurses-dev \
+          rsync cpio unzip kmod gcc make flex bison \
+          python3 python3-pip bc lz4 lzop xxd wget \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+        
+    - name: Fix Kernel Script Permissions
       run: |
-        echo "Installing GCC cross-compilers for ARM64..."
+        cd kernel
+        echo "Fixing script permissions..."
+        chmod +x scripts/*.sh 2>/dev/null || true
+        find . -name "*.sh" -type f -exec chmod +x {} \; 2>/dev/null || true
         
-        # Install GCC toolchain from Ubuntu repositories (most reliable)
-        sudo apt-get install -y \
-          gcc-12-aarch64-linux-gnu \
-          gcc-12-arm-linux-gnueabi \
-          g++-12-aarch64-linux-gnu \
-          g++-12-arm-linux-gnueabi \
-          clang-14 lld-14 llvm-14
-        
-        # Create symlinks for compatibility
-        sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-12 /usr/bin/aarch64-linux-gnu-gcc
-        sudo ln -sf /usr/bin/arm-linux-gnueabi-gcc-12 /usr/bin/arm-linux-gnueabi-gcc
-        sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-12 /usr/bin/aarch64-linux-gnu-g++
-        sudo ln -sf /usr/bin/arm-linux-gnueabi-g++-12 /usr/bin/arm-linux-gnueabi-g++
-        
-        # Create symlinks for clang
-        sudo ln -sf /usr/bin/clang-14 /usr/bin/clang
-        sudo ln -sf /usr/bin/clang++-14 /usr/bin/clang++
-        sudo ln -sf /usr/bin/ld.lld-14 /usr/bin/ld.lld
-        sudo ln -sf /usr/bin/llvm-ar-14 /usr/bin/llvm-ar
-        sudo ln -sf /usr/bin/llvm-nm-14 /usr/bin/llvm-nm
-        sudo ln -sf /usr/bin/llvm-objcopy-14 /usr/bin/llvm-objcopy
-        sudo ln -sf /usr/bin/llvm-objdump-14 /usr/bin/llvm-objdump
-        sudo ln -sf /usr/bin/llvm-strip-14 /usr/bin/llvm-strip
-        
-        echo "Toolchain installed successfully!"
-        echo "GCC version: $(aarch64-linux-gnu-gcc --version | head -n1)"
-        echo "Clang version: $(clang --version | head -n1)"
-        
-    - name: Set up CCache
-      uses: hendrikmuhs/ccache-action@v1.2
-      with:
-        key: kernel-ksu-build-${{ env.KERNEL_NAME }}
-        max-size: 500M
-        
-    - name: Install KernelSU Next (Stable)
+    - name: Install SukiSU (Built-in Branch)
       run: |
         cd kernel
         
-        # Install KernelSU Next using the official setup script
-        echo "Installing KernelSU Next (stable branch)..."
+        echo "Installing SukiSU (builtin branch)..."
         
-        # Run the KernelSU setup script
-        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s ${{ env.KERNELSU_BRANCH }}
+        # Remove any previous KernelSU/SukiSU attempts
+        rm -rf KernelSU SukiSU kernelsu
         
-        # The setup script should have created a symlink
-        echo "Checking what was created..."
-        echo "Current directory contents:"
-        ls -la
+        # Clone the SukiSU repository, builtin branch
+        git clone https://github.com/HarukoNanase/SukiSU.git --depth=1 --branch=builtin
         
-        # Check if KernelSU symlink was created
-        if [ -L "KernelSU" ]; then
-          echo "✅ KernelSU symlink created successfully"
-          echo "KernelSU symlink points to: $(readlink -f KernelSU)"
+        if [ -d "SukiSU" ]; then
+          echo "SukiSU cloned successfully."
           
-          # Check if the target exists
-          if [ -d "$(readlink -f KernelSU)" ]; then
-            echo "✅ KernelSU target directory exists"
+          # The builtin branch structure might differ.
+          # Check for common integration paths.
+          if [ -d "SukiSU/kernel" ]; then
+            echo "Found kernel source in SukiSU/kernel. Creating symlink..."
+            ln -sf SukiSU/kernel KernelSU
+          elif [ -f "SukiSU/kernel.patch" ]; then
+            echo "Found patch file. Manual patching may be required."
+            # Consider applying the patch here if needed:
+            # git apply SukiSU/kernel.patch --stat --check
           else
-            echo "⚠️ KernelSU symlink target doesn't exist"
-            # Try to create it manually
-            if [ -d "KernelSU-Next/kernel" ]; then
-              echo "Creating KernelSU symlink manually..."
-              rm -f KernelSU
-              ln -s KernelSU-Next/kernel KernelSU
-            fi
+            echo "Exploring SukiSU directory structure..."
+            find SukiSU -type f -name "*.patch" -o -name "Kconfig" -o -name "Makefile" | head -10
+            # As a fallback, symlink the entire directory
+            ln -sf SukiSU KernelSU
           fi
-        elif [ -d "KernelSU" ]; then
-          echo "✅ KernelSU directory exists (not a symlink)"
+          echo "✅ SukiSU integration prepared."
         else
-          echo "⚠️ KernelSU not found, checking for KernelSU-Next..."
-          if [ -d "KernelSU-Next" ]; then
-            echo "Found KernelSU-Next directory"
-            if [ -d "KernelSU-Next/kernel" ]; then
-              echo "Creating KernelSU symlink..."
-              ln -s KernelSU-Next/kernel KernelSU
-              echo "✅ Created KernelSU symlink"
-            else
-              echo "⚠️ KernelSU-Next/kernel directory not found"
-              # List KernelSU-Next contents
-              echo "KernelSU-Next contents:"
-              ls -la KernelSU-Next/
-            fi
-          else
-            echo "❌ KernelSU-Next directory not found"
-            echo "Trying manual installation..."
-            git clone https://github.com/KernelSU-Next/KernelSU-Next.git --depth=1 --branch=stable
-            if [ -d "KernelSU-Next/kernel" ]; then
-              ln -s KernelSU-Next/kernel KernelSU
-              echo "✅ Manual installation successful"
-            else
-              echo "⚠️ Manual installation failed, continuing without KernelSU"
-            fi
-          fi
+          echo "❌ SukiSU clone failed. The build will likely fail."
+          exit 1
         fi
         
-        # Final check
-        if [ -e "KernelSU" ]; then
-          echo "✅ KernelSU installation completed"
-          echo "KernelSU location: $(readlink -f KernelSU 2>/dev/null || echo KernelSU)"
-        else
-          echo "⚠️ KernelSU not found, will build without KernelSU support"
-        fi
-        
-    - name: Configure Kernel with KernelSU
+    - name: Configure Kernel with SukiSU
       run: |
         cd kernel
         
-        # Set up environment variables
         export ARCH=${{ env.ARCH }}
         export SUBARCH=${{ env.SUBARCH }}
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        export CLANG_TRIPLE=aarch64-linux-gnu-
         
-        # Create output directory
+        # Create output directory and generate base .config
         mkdir -p out
-        
-        # First check if we can build with existing defconfig
-        echo "Generating initial configuration..."
         make O=out ${{ env.CONFIG }}
         
-        # Enable KernelSU based on kernel version and GKI status
-        echo "Configuring KernelSU options..."
+        echo "Configuring for SukiSU (built-in module)..."
         
-        # Always enable these for KernelSU
+        # 1. Enable absolute prerequisites
         echo "CONFIG_KPROBES=y" >> out/.config
         echo "CONFIG_HAVE_KPROBES=y" >> out/.config
         echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
         echo "CONFIG_OVERLAY_FS=y" >> out/.config
         
-        # Check if KernelSU is installed before enabling
-        if [ -e "KernelSU" ]; then
-          echo "KernelSU detected, enabling support..."
-          echo "CONFIG_KSU=y" >> out/.config
-          
-          # Check if we need built-in driver for GKI 1.0 kernels
-          if [ "${{ steps.check-kernel.outputs.ksu_build_method }}" = "builtin" ]; then
-            echo "CONFIG_KSU_BUILTIN=y" >> out/.config
-            echo "Enabled built-in KernelSU driver for GKI kernel"
-          else
-            echo "CONFIG_KSU_MODULE=y" >> out/.config
-            echo "KernelSU will be built as module"
-          fi
-        else
-          echo "⚠️ KernelSU not found, building without KernelSU support"
-        fi
+        # 2. Enable module support (core for built-in)
+        echo "CONFIG_MODULES=y" >> out/.config
+        echo "CONFIG_MODULE_UNLOAD=y" >> out/.config # Usually needed
         
-        # Update config with new options
+        # 3. Configure SukiSU itself for built-in (NOT as a loadable module)
+        echo "CONFIG_SUKISU=y" >> out/.config
+        # The key part: Set it to be built-in ('y'), not a module ('m')
+        echo "CONFIG_SUKISU_BUILTIN=y" >> out/.config
+        
+        # 4. Update the config, silently accepting defaults for new options
         make O=out olddefconfig
         
-        # Display KernelSU-related config
-        echo "Kernel configuration:"
-        grep -E "CONFIG_KSU|KPROBES|OVERLAY_FS" out/.config || echo "No KernelSU config found"
+        echo "Kernel configuration for SukiSU complete."
+        echo "Relevant configs:"
+        grep -E "CONFIG_SUKISU|CONFIG_MODULES|CONFIG_KPROBES" out/.config || true
         
-    - name: Build Kernel with KernelSU
+    - name: Build Kernel
       run: |
         cd kernel
         
-        # Set environment variables
         export ARCH=${{ env.ARCH }}
         export SUBARCH=${{ env.SUBARCH }}
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        export CLANG_TRIPLE=aarch64-linux-gnu-
         
-        # Build the kernel with Clang (preferred for KernelSU)
-        echo "Starting kernel build..."
+        echo "Starting kernel build with GCC..."
+        echo "Using toolchain: $(aarch64-linux-gnu-gcc --version | head -n1)"
         
-        # First try with Clang
-        echo "Attempting build with Clang..."
-        if make -j${{ env.JOBS }} O=out \
-          CC=clang \
-          LD=ld.lld \
-          AR=llvm-ar \
-          NM=llvm-nm \
-          OBJCOPY=llvm-objcopy \
-          OBJDUMP=llvm-objdump \
-          STRIP=llvm-strip \
-          CROSS_COMPILE=aarch64-linux-gnu- \
-          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          CLANG_TRIPLE=aarch64-linux-gnu- 2>&1 | tee build.log; then
-          
-          echo "✅ Kernel built successfully with Clang!"
-          
-        else
-          echo "Clang build failed, trying with GCC..."
-          
-          # If Clang fails, try with GCC
-          if make -j${{ env.JOBS }} O=out \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- 2>&1 | tee -a build.log; then
-            
-            echo "✅ Kernel built successfully with GCC!"
-          else
-            echo "❌ Both Clang and GCC builds failed!"
-            echo "Last 50 lines of build log:"
-            tail -50 build.log
-            exit 1
-          fi
-        fi
+        # Build the kernel with GCC (Samsung kernels usually build with GCC)
+        make -j${{ env.JOBS }} O=out
         
-        # Check for KernelSU modules
-        echo "Looking for KernelSU modules..."
-        find out -name "*ksu*" -o -name "*KSU*" -o -name "*.ko" 2>/dev/null | head -10 || echo "No KernelSU-specific modules found"
+        echo "Kernel build completed!"
         
-    - name: Verify KernelSU Integration
+        # Check for output files
+        echo "Checking build output..."
+        ls -la out/arch/arm64/boot/ 2>/dev/null || echo "No output directory"
+        
+    - name: Build Kernel Modules
       run: |
         cd kernel
         
-        echo "Verifying build..."
+        export ARCH=${{ env.ARCH }}
+        export SUBARCH=${{ env.SUBARCH }}
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+        
+        echo "Building kernel modules..."
+        
+        # Build modules separately
+        make -j${{ env.JOBS }} O=out modules
+        
+        echo "Modules built successfully"
+        
+        # List built modules
+        echo "Built modules:"
+        find out -name "*.ko" -type f | head -20 || echo "No modules found"
+        
+    - name: Verify SukiSU Integration
+      run: |
+        cd kernel
+        
+        echo "Verifying SukiSU build..."
         
         # Check if kernel image was created
         if [ -f "out/arch/arm64/boot/Image" ] || [ -f "out/arch/arm64/boot/Image.gz" ]; then
@@ -333,18 +189,18 @@ jobs:
           ls -la out/arch/arm64/boot/ 2>/dev/null || echo "Output directory not found"
         fi
         
-        # Check if kernel has KSU support (if enabled)
-        if grep -q "CONFIG_KSU=y" out/.config 2>/dev/null; then
-          echo "✅ KernelSU enabled in kernel config"
+        # Check if SukiSU was configured
+        if grep -q "CONFIG_SUKISU=y" out/.config 2>/dev/null; then
+          echo "✅ SukiSU enabled in kernel config"
           
           # Check build method
-          if grep -q "CONFIG_KSU_BUILTIN=y" out/.config 2>/dev/null; then
-            echo "✅ KernelSU driver: Built-in (for GKI)"
-          elif grep -q "CONFIG_KSU_MODULE=y" out/.config 2>/dev/null; then
-            echo "✅ KernelSU driver: Module"
+          if grep -q "CONFIG_SUKISU_BUILTIN=y" out/.config 2>/dev/null; then
+            echo "✅ SukiSU driver: Built-in (compiled into kernel)"
+          elif grep -q "CONFIG_SUKISU=m" out/.config 2>/dev/null; then
+            echo "⚠️ SukiSU driver: Module (separate .ko file)"
           fi
         else
-          echo "⚠️ KernelSU not enabled in config"
+          echo "⚠️ SukiSU not enabled in config"
         fi
         
         # Display kernel version info
@@ -353,59 +209,63 @@ jobs:
           grep UTS_RELEASE out/include/generated/utsrelease.h || true
         fi
         
-    - name: Package Kernel Image
+    - name: Package Kernel
       run: |
         cd kernel
         
         KERNEL_VERSION="${{ steps.check-kernel.outputs.version }}"
-        BUILD_DATE=$(date +%Y%m%d-%H%M)
         
         mkdir -p kernel_output
         
-        # Check what files were generated
-        echo "Checking generated files in out/arch/arm64/boot/:"
-        ls -la out/arch/arm64/boot/ 2>/dev/null || echo "No output directory found"
-        
-        # Copy built images
+        # Copy kernel image
         if [ -f "out/arch/arm64/boot/Image" ]; then
-          cp out/arch/arm64/boot/Image kernel_output/Image
-          echo "✅ Copied Image"
+          cp out/arch/arm64/boot/Image kernel_output/
+          echo "✅ Kernel image copied"
         elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
-          cp out/arch/arm64/boot/Image.gz kernel_output/Image.gz
-          echo "✅ Copied Image.gz"
+          cp out/arch/arm64/boot/Image.gz kernel_output/
+          echo "✅ Compressed kernel image copied"
         else
-          echo "❌ No kernel image found!"
           # Try to find any kernel image
-          find out -name "Image*" -exec cp {} kernel_output/ \; 2>/dev/null || true
+          find out/arch/arm64/boot -name "Image*" -exec cp {} kernel_output/ \; 2>/dev/null
+          echo "📦 Kernel image(s) copied"
         fi
         
-        # Copy device tree images if they exist
-        [ -f "out/arch/arm64/boot/dtb.img" ] && cp out/arch/arm64/boot/dtb.img kernel_output/ && echo "✅ Copied dtb.img"
-        [ -f "out/arch/arm64/boot/dtbo.img" ] && cp out/arch/arm64/boot/dtbo.img kernel_output/ && echo "✅ Copied dtbo.img"
+        # Copy device tree files if they exist
+        find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} kernel_output/ \; 2>/dev/null || true
+        [ -f "out/arch/arm64/boot/dtb.img" ] && cp out/arch/arm64/boot/dtb.img kernel_output/
+        [ -f "out/arch/arm64/boot/dtbo.img" ] && cp out/arch/arm64/boot/dtbo.img kernel_output/
         
-        # Copy all kernel modules
+        # Create modules directory
         mkdir -p kernel_output/modules
-        find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null || echo "No modules found"
         
-        # List modules for debugging
-        echo "Modules found:"
-        ls -la kernel_output/modules/ 2>/dev/null | head -10 || echo "No modules directory"
+        # Copy all kernel modules (excluding SukiSU which should be built-in)
+        find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null || true
         
-        # Create info file
+        # Check if there's any SukiSU module (shouldn't be if built-in)
+        echo "Checking for SukiSU modules:"
+        find kernel_output/modules -name "*suki*" -o -name "*su*" | head -5
+        
+        # Create build info file
         {
-          echo "Kernel: ${{ env.KERNEL_NAME }}"
+          echo "Kernel: Samsung A135F (a13x)"
           echo "Version: $KERNEL_VERSION"
-          echo "Architecture: ${{ env.ARCH }}"
-          echo "Config: ${{ env.CONFIG }}"
-          echo "Toolchain: ${{ env.TOOLCHAIN_VERSION }}"
-          echo "KernelSU: Next (${{ env.KERNELSU_BRANCH }} branch)"
-          echo "Build Method: ${{ steps.check-kernel.outputs.ksu_build_method }}"
-          echo "GKI Status: ${{ steps.check-kernel.outputs.is_gki }} (${{ steps.check-kernel.outputs.gki_version }})"
+          echo "Architecture: arm64"
+          echo "Config: exynos850_defconfig"
+          echo "Toolchain: GCC $(aarch64-linux-gnu-gcc --version | head -n1 | cut -d' ' -f4)"
+          echo "Build Type: Non-GKI with SukiSU (built-in)"
+          echo "SukiSU Branch: builtin"
           echo "Build Date: $(date)"
           echo "Git Commit: ${{ github.sha }}"
+          echo ""
+          echo "Note: SukiSU is compiled directly into the kernel Image."
+          echo "There should be no separate sukisu.ko module file."
         } > kernel_output/build-info.txt
         
-    - name: Create AnyKernel3 Flashable Zip
+        # Show package contents
+        echo "📦 Package contents:"
+        ls -la kernel_output/
+        
+    - name: Create Flashable ZIP
       run: |
         cd kernel
         
@@ -423,15 +283,7 @@ jobs:
           KERNEL_IMAGE="Image.gz"
         else
           echo "❌ No kernel image found to package!"
-          # Check if we have any image file
-          IMAGE_FILE=$(ls kernel_output/Image* 2>/dev/null | head -1)
-          if [ -n "$IMAGE_FILE" ]; then
-            cp "$IMAGE_FILE" AnyKernel3/
-            KERNEL_IMAGE=$(basename "$IMAGE_FILE")
-            echo "✅ Copied $KERNEL_IMAGE"
-          else
-            exit 1
-          fi
+          exit 1
         fi
         
         # Copy device tree images if they exist
@@ -454,7 +306,7 @@ jobs:
         ## AnyKernel setup
         # begin properties
         properties() {
-        kernel.string=KernelSU-Next-A135F
+        kernel.string=SukiSU-A135F
         do.devicecheck=1
         do.modules=1
         do.systemless=1
@@ -484,15 +336,15 @@ jobs:
         set_perm_recursive 0 0 755 644 $ramdisk/*;
         set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
         
-        # Install KernelSU modules if present
+        # Install modules if present
         if [ -d "$home/modules" ]; then
-          ui_print "Installing KernelSU modules...";
+          ui_print "Installing kernel modules...";
           mkdir -p /data/adb/modules;
           cp -rf $home/modules/* /data/adb/modules/;
           set_perm_recursive 0 0 755 644 /data/adb/modules/*;
         fi
         
-        ui_print "Kernel with KernelSU Next installed successfully!";
+        ui_print "Kernel with SukiSU (built-in) installed successfully!";
         AK_EOF
         
         # Create update-binary
@@ -508,9 +360,10 @@ jobs:
           echo -e "ui_print $1\nui_print" > /proc/self/fd/$OUTFD;
         }
         
-        ui_print "Flashing KernelSU Next kernel...";
+        ui_print "Flashing SukiSU Kernel...";
         ui_print "Device: Samsung A135F";
         ui_print "Kernel version: $KERNEL_VERSION";
+        ui_print "SukiSU: Built-in Edition";
         
         . /tmp/anykernel/tools/ak3-core.sh;
         UPDATE_EOF
@@ -520,7 +373,7 @@ jobs:
         
         # Create zip
         cd AnyKernel3
-        ZIP_NAME="KernelSU-Next-A135F-${KERNEL_VERSION}-${SHORT_SHA}.zip"
+        ZIP_NAME="SukiSU-A135F-${KERNEL_VERSION}-${SHORT_SHA}.zip"
         zip -r9 "../$ZIP_NAME" * -x .git README.md
         
         echo "Created flashable zip: $ZIP_NAME"
@@ -528,31 +381,28 @@ jobs:
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-${{ env.KERNEL_NAME }}-${{ github.sha }}
+        name: kernel-sukisu-a135f-${{ github.sha }}
         path: |
           kernel/kernel_output/
-          kernel/KernelSU-Next-A135F-*.zip
+          kernel/SukiSU-A135F-*.zip
           
     - name: Create Build Summary
       run: |
-        echo "## Kernel Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "## Samsung A135F Kernel Build Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "**Kernel Version:** \`${{ steps.check-kernel.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**GKI Status:** ${{ steps.check-kernel.outputs.is_gki }}" >> $GITHUB_STEP_SUMMARY
-        if [ "${{ steps.check-kernel.outputs.is_gki }}" = "true" ]; then
-          echo "GKI Version: ${{ steps.check-kernel.outputs.gki_version }}" >> $GITHUB_STEP_SUMMARY
-        fi
+        echo "**Build Type:** Non-GKI with SukiSU (Built-in)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**KernelSU Integration:**" >> $GITHUB_STEP_SUMMARY
-        echo "- Branch: ${{ env.KERNELSU_BRANCH }}" >> $GITHUB_STEP_SUMMARY
-        echo "- Build Method: ${{ steps.check-kernel.outputs.ksu_build_method }}" >> $GITHUB_STEP_SUMMARY
+        echo "**SukiSU Integration:** Built directly into kernel Image" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Toolchain:** GCC (aarch64-linux-gnu)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "**Artifacts Generated:**" >> $GITHUB_STEP_SUMMARY
         echo "- Raw kernel images and modules" >> $GITHUB_STEP_SUMMARY
-        echo "- Flashable AnyKernel3 zip" >> $GITHUB_STEP_SUMMARY
+        echo "- Flashable ZIP with AnyKernel3" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "**Build Details:**" >> $GITHUB_STEP_SUMMARY
-        echo "- Toolchain: ${{ env.TOOLCHAIN_VERSION }}" >> $GITHUB_STEP_SUMMARY
-        echo "- Config: ${{ env.CONFIG }}" >> $GITHUB_STEP_SUMMARY
-        echo "- Architecture: ${{ env.ARCH }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Config: exynos850_defconfig" >> $GITHUB_STEP_SUMMARY
+        echo "- Architecture: arm64" >> $GITHUB_STEP_SUMMARY
+        echo "- Git Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
