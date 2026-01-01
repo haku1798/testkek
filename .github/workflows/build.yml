@@ -12,8 +12,7 @@ env:
   ARCH: arm64
   SUBARCH: arm64
   CONFIG: exynos850_defconfig
-  TOOLCHAIN_VERSION: aosp-clang-14
-  CLANG_VERSION: 14.0.7
+  TOOLCHAIN_VERSION: gcc-12
   JOBS: 4
   KERNELSU_BRANCH: stable
 
@@ -109,38 +108,39 @@ jobs:
           python3 python3-pip python3-dev libffi-dev \
           libxml2-dev libxslt1-dev libjpeg8-dev openjdk-11-jdk \
           libtinfo5 libelf-dev libncurses-dev \
-          rsync cpio unzip
+          rsync cpio unzip kmod
           
     - name: Install Toolchain
       run: |
-        # Create toolchain directory
-        sudo mkdir -p /opt/toolchain
-        sudo chmod 777 /opt/toolchain
+        echo "Installing GCC cross-compilers for ARM64..."
         
-        # Method 1: Try to download AOSP Clang (more reliable)
-        echo "Downloading AOSP Clang toolchain..."
-        cd /opt/toolchain
+        # Install GCC toolchain from Ubuntu repositories (most reliable)
+        sudo apt-get install -y \
+          gcc-12-aarch64-linux-gnu \
+          gcc-12-arm-linux-gnueabi \
+          g++-12-aarch64-linux-gnu \
+          g++-12-arm-linux-gnueabi \
+          clang-14 lld-14 llvm-14
         
-        # Download AOSP Clang 14.0.7 (works well with Android kernels)
-        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r450784e.tar.gz -O aosp-clang.tar.gz || \
-        wget https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r450784e/archive/refs/heads/lineage-20.0.tar.gz -O aosp-clang.tar.gz || \
-        wget https://storage.googleapis.com/android-llvm/linux-x86/clang-r450784e.tar.gz -O aosp-clang.tar.gz
+        # Create symlinks for compatibility
+        sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-12 /usr/bin/aarch64-linux-gnu-gcc
+        sudo ln -sf /usr/bin/arm-linux-gnueabi-gcc-12 /usr/bin/arm-linux-gnueabi-gcc
+        sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-12 /usr/bin/aarch64-linux-gnu-g++
+        sudo ln -sf /usr/bin/arm-linux-gnueabi-g++-12 /usr/bin/arm-linux-gnueabi-g++
         
-        if [ -f "aosp-clang.tar.gz" ]; then
-          tar -xzf aosp-clang.tar.gz
-          export CLANG_PATH="/opt/toolchain"
-          echo "AOSP Clang installed successfully"
-        else
-          # Fallback: Use GCC toolchain for Samsung kernels
-          echo "Using GCC toolchain as fallback..."
-          sudo apt-get install -y gcc-12-aarch64-linux-gnu gcc-12-arm-linux-gnueabi
-          ln -sf /usr/bin/aarch64-linux-gnu-gcc-12 /usr/bin/aarch64-linux-gnu-gcc
-          ln -sf /usr/bin/arm-linux-gnueabi-gcc-12 /usr/bin/arm-linux-gnueabi-gcc
-          export CLANG_PATH="/usr/bin"
-        fi
+        # Create symlinks for clang
+        sudo ln -sf /usr/bin/clang-14 /usr/bin/clang
+        sudo ln -sf /usr/bin/clang++-14 /usr/bin/clang++
+        sudo ln -sf /usr/bin/ld.lld-14 /usr/bin/ld.lld
+        sudo ln -sf /usr/bin/llvm-ar-14 /usr/bin/llvm-ar
+        sudo ln -sf /usr/bin/llvm-nm-14 /usr/bin/llvm-nm
+        sudo ln -sf /usr/bin/llvm-objcopy-14 /usr/bin/llvm-objcopy
+        sudo ln -sf /usr/bin/llvm-objdump-14 /usr/bin/llvm-objdump
+        sudo ln -sf /usr/bin/llvm-strip-14 /usr/bin/llvm-strip
         
-        # Always install GCC cross-compilers
-        sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+        echo "Toolchain installed successfully!"
+        echo "GCC version: $(aarch64-linux-gnu-gcc --version | head -n1)"
+        echo "Clang version: $(clang --version | head -n1)"
         
     - name: Set up CCache
       uses: hendrikmuhs/ccache-action@v1.2
@@ -175,19 +175,13 @@ jobs:
         export SUBARCH=${{ env.SUBARCH }}
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
         
-        # Check if we have clang
-        if command -v clang &> /dev/null || [ -f "/opt/toolchain/bin/clang" ]; then
-          export CC=clang
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          echo "Using Clang compiler"
-        else
-          export CC=aarch64-linux-gnu-gcc
-          echo "Using GCC compiler"
-        fi
-        
-        # Create output directory and generate .config
+        # Create output directory
         mkdir -p out
+        
+        # First check if we can build with existing defconfig
+        echo "Generating initial configuration..."
         make O=out ${{ env.CONFIG }}
         
         # Enable KernelSU based on kernel version and GKI status
@@ -222,37 +216,50 @@ jobs:
       run: |
         cd kernel
         
+        # Set environment variables
         export ARCH=${{ env.ARCH }}
         export SUBARCH=${{ env.SUBARCH }}
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
         
-        # Determine compiler to use
-        if command -v clang &> /dev/null || [ -f "/opt/toolchain/bin/clang" ]; then
-          echo "Building with Clang..."
-          make -j${{ env.JOBS }} O=out \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CLANG_TRIPLE=aarch64-linux-gnu-
-        else
-          echo "Building with GCC..."
-          make -j${{ env.JOBS }} O=out \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        fi
+        # Build the kernel with Clang
+        echo "Starting kernel build with KernelSU..."
+        
+        # First try with Clang
+        echo "Attempting build with Clang..."
+        if make -j${{ env.JOBS }} O=out \
+          CC=clang \
+          LD=ld.lld \
+          AR=llvm-ar \
+          NM=llvm-nm \
+          OBJCOPY=llvm-objcopy \
+          OBJDUMP=llvm-objdump \
+          STRIP=llvm-strip \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          CLANG_TRIPLE=aarch64-linux-gnu-; then
           
-        echo "Kernel build completed!"
+          echo "✅ Kernel built successfully with Clang!"
+          
+        else
+          echo "Clang build failed, trying with GCC..."
+          
+          # If Clang fails, try with GCC
+          if make -j${{ env.JOBS }} O=out \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-; then
+            
+            echo "✅ Kernel built successfully with GCC!"
+          else
+            echo "❌ Both Clang and GCC builds failed!"
+            exit 1
+          fi
+        fi
         
         # Check for KernelSU modules
         echo "Looking for KernelSU modules..."
-        find out -name "*ksu*" -o -name "kernelsu*" 2>/dev/null || echo "No KernelSU-specific modules found"
+        find out -name "*ksu*" -o -name "kernelsu*" -o -name "*.ko" 2>/dev/null | head -10 || echo "No KernelSU-specific modules found"
         
     - name: Verify KernelSU Integration
       run: |
@@ -299,14 +306,30 @@ jobs:
         
         mkdir -p kernel_output
         
+        # Check what files were generated
+        echo "Checking generated files in out/arch/arm64/boot/:"
+        ls -la out/arch/arm64/boot/ 2>/dev/null || echo "No output directory found"
+        
         # Copy built images
-        cp out/arch/arm64/boot/Image kernel_output/Image
-        cp out/arch/arm64/boot/dtb.img kernel_output/ 2>/dev/null || true
-        cp out/arch/arm64/boot/dtbo.img kernel_output/ 2>/dev/null || true
+        if [ -f "out/arch/arm64/boot/Image" ]; then
+          cp out/arch/arm64/boot/Image kernel_output/Image
+          echo "✅ Copied Image"
+        elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+          cp out/arch/arm64/boot/Image.gz kernel_output/Image.gz
+          echo "✅ Copied Image.gz"
+        else
+          echo "❌ No kernel image found!"
+          # Try to find any kernel image
+          find out -name "Image*" -exec cp {} kernel_output/ \; 2>/dev/null || true
+        fi
+        
+        # Copy device tree images if they exist
+        [ -f "out/arch/arm64/boot/dtb.img" ] && cp out/arch/arm64/boot/dtb.img kernel_output/ && echo "✅ Copied dtb.img"
+        [ -f "out/arch/arm64/boot/dtbo.img" ] && cp out/arch/arm64/boot/dtbo.img kernel_output/ && echo "✅ Copied dtbo.img"
         
         # Copy all kernel modules
         mkdir -p kernel_output/modules
-        find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null || true
+        find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null || echo "No modules found"
         
         # Create info file
         {
@@ -332,7 +355,14 @@ jobs:
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
         
         # Copy kernel image to AnyKernel3
-        cp kernel_output/Image AnyKernel3/
+        if [ -f "kernel_output/Image" ]; then
+          cp kernel_output/Image AnyKernel3/
+        elif [ -f "kernel_output/Image.gz" ]; then
+          cp kernel_output/Image.gz AnyKernel3/
+        else
+          echo "❌ No kernel image found to package!"
+          exit 1
+        fi
         
         # Copy device tree images if they exist
         [ -f "kernel_output/dtb.img" ] && cp kernel_output/dtb.img AnyKernel3/
