@@ -1,0 +1,163 @@
+name: Check Kernel Version
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # Allow manual triggers
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v4
+      
+    - name: Extract Kernel Version
+      id: kernel-version
+      run: |
+        # Method 1: Check Makefile for kernel version
+        if [ -f "Makefile" ]; then
+          VERSION=$(grep '^VERSION' Makefile | head -1 | sed 's/.*= *//')
+          PATCHLEVEL=$(grep '^PATCHLEVEL' Makefile | head -1 | sed 's/.*= *//')
+          SUBLEVEL=$(grep '^SUBLEVEL' Makefile | head -1 | sed 's/.*= *//')
+          EXTRAVERSION=$(grep '^EXTRAVERSION' Makefile | head -1 | sed 's/.*= *//')
+          
+          # Clean up any spaces or tabs
+          VERSION=$(echo $VERSION | tr -d '[:space:]')
+          PATCHLEVEL=$(echo $PATCHLEVEL | tr -d '[:space:]')
+          SUBLEVEL=$(echo $SUBLEVEL | tr -d '[:space:]')
+          EXTRAVERSION=$(echo $EXTRAVERSION | tr -d '[:space:]')
+          
+          KERNEL_VERSION="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}${EXTRAVERSION}"
+          echo "Kernel version from Makefile: $KERNEL_VERSION"
+        else
+          echo "Makefile not found!"
+          KERNEL_VERSION="unknown"
+        fi
+        
+        # Method 2: Check include/generated/utsrelease.h if it exists
+        if [ -f "include/generated/utsrelease.h" ]; then
+          UTS_RELEASE=$(grep 'UTS_RELEASE' include/generated/utsrelease.h | cut -d'"' -f2)
+          echo "UTS_RELEASE from header: $UTS_RELEASE"
+          KERNEL_VERSION="$UTS_RELEASE"
+        elif [ -f "include/linux/utsrelease.h" ]; then
+          UTS_RELEASE=$(grep 'UTS_RELEASE' include/linux/utsrelease.h | cut -d'"' -f2)
+          echo "UTS_RELEASE from linux header: $UTS_RELEASE"
+          KERNEL_VERSION="$UTS_RELEASE"
+        fi
+        
+        # Method 3: Check for version in kernel config
+        if [ -f "arch/arm64/configs/exynos850_defconfig" ]; then
+          CONFIG_VERSION=$(grep 'CONFIG_LOCALVERSION' arch/arm64/configs/exynos850_defconfig | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "Config local version: $CONFIG_VERSION"
+        fi
+        
+        # Method 4: Use make kernelversion if make is available
+        if command -v make &> /dev/null; then
+          MAKE_VERSION=$(make kernelversion 2>/dev/null || echo "make kernelversion failed")
+          echo "make kernelversion output: $MAKE_VERSION"
+          
+          if [ "$MAKE_VERSION" != "make kernelversion failed" ] && [ ! -z "$MAKE_VERSION" ]; then
+            KERNEL_VERSION="$MAKE_VERSION"
+          fi
+        fi
+        
+        echo "Final kernel version: $KERNEL_VERSION"
+        echo "kernel_version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
+        echo "VERSION_NUM=$VERSION" >> $GITHUB_OUTPUT
+        echo "PATCHLEVEL_NUM=$PATCHLEVEL" >> $GITHUB_OUTPUT
+        
+    - name: Check Android Kernel Version Compatibility
+      run: |
+        VERSION=${{ steps.kernel-version.outputs.VERSION_NUM }}
+        PATCHLEVEL=${{ steps.kernel-version.outputs.PATCHLEVEL_NUM }}
+        KERNEL_VERSION=${{ steps.kernel-version.outputs.kernel_version }}
+        
+        echo "Kernel Version: $KERNEL_VERSION"
+        echo "Major Version: $VERSION"
+        echo "Patch Level: $PATCHLEVEL"
+        
+        # Check if kernel version is supported by KernelSU
+        echo "Checking KernelSU compatibility..."
+        
+        # KernelSU NEXT supports kernel 4.14+
+        if [ "$VERSION" -ge 5 ] || { [ "$VERSION" -eq 4 ] && [ "$PATCHLEVEL" -ge 14 ]; }; then
+          echo "✅ This kernel version ($KERNEL_VERSION) should be compatible with KernelSU NEXT"
+          echo "KernelSU support: YES" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️  This kernel version ($KERNEL_VERSION) might not be fully compatible with KernelSU NEXT"
+          echo "KernelSU support: LIMITED (requires kernel 4.14+)" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Check for specific Samsung kernel versions
+        if [[ "$KERNEL_VERSION" == *"exynos"* ]] || [[ "$KERNEL_VERSION" == *"samsung"* ]]; then
+          echo "ℹ️  Samsung Exynos kernel detected"
+          echo "Vendor: Samsung Exynos" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Output to GitHub summary
+        echo "## Kernel Version Analysis" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Detected Kernel Version:** \`$KERNEL_VERSION\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Breakdown:**" >> $GITHUB_STEP_SUMMARY
+        echo "- Major: $VERSION" >> $GITHUB_STEP_SUMMARY
+        echo "- Patch Level: $PATCHLEVEL" >> $GITHUB_STEP_SUMMARY
+        
+    - name: Check Kernel Configuration
+      run: |
+        echo "Looking for kernel configuration files..."
+        
+        # Check for defconfig files
+        if [ -d "arch/arm64/configs" ]; then
+          echo "Available ARM64 configs:"
+          ls arch/arm64/configs/*_defconfig 2>/dev/null || echo "No defconfig files found"
+          
+          # Common Samsung Exynos 850 config
+          if [ -f "arch/arm64/configs/exynos850_defconfig" ]; then
+            echo "Found exynos850_defconfig"
+            # Check some important configs
+            echo "Checking important kernel features:"
+            
+            # Check for KPROBES (needed for KernelSU)
+            if grep -q "CONFIG_KPROBES=y" arch/arm64/configs/exynos850_defconfig; then
+              echo "✅ CONFIG_KPROBES=y (required for KernelSU)"
+            else
+              echo "❌ CONFIG_KPROBES not enabled (needed for KernelSU)"
+            fi
+            
+            # Check for OVERLAY_FS
+            if grep -q "CONFIG_OVERLAY_FS=y" arch/arm64/configs/exynos850_defconfig; then
+              echo "✅ CONFIG_OVERLAY_FS=y"
+            else
+              echo "⚠️  CONFIG_OVERLAY_FS not enabled"
+            fi
+          fi
+        fi
+        
+    - name: Create Version Summary
+      run: |
+        echo "## Complete Kernel Information" > kernel_info.md
+        echo "" >> kernel_info.md
+        echo "**Version:** ${{ steps.kernel-version.outputs.kernel_version }}" >> kernel_info.md
+        echo "" >> kernel_info.md
+        echo "**Source Information:**" >> kernel_info.md
+        echo "- Repository: ${{ github.repository }}" >> kernel_info.md
+        echo "- SHA: ${{ github.sha }}" >> kernel_info.md
+        echo "- Ref: ${{ github.ref }}" >> kernel_info.md
+        echo "" >> kernel_info.md
+        echo "**File Structure:**" >> kernel_info.md
+        echo '```' >> kernel_info.md
+        find . -name "Makefile" -o -name "Kconfig" | head -20 | sort >> kernel_info.md
+        echo '```' >> kernel_info.md
+        
+    - name: Upload Version Info
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-version-info
+        path: |
+          kernel_info.md
+          Makefile
