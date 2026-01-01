@@ -139,12 +139,12 @@ jobs:
         
         echo "✅ Version detection scripts patched"
         
-    # Step 7: Fix Kconfig syntax errors
+    # Step 7: Fix Kconfig syntax errors with simplified approach
     - name: Fix Kconfig Issues
       run: |
         cd kernel
         
-        echo "=== FIXING KCONFIG ISSUES ==="
+        echo "=== FIXING KCONFIG ISSUES WITH SIMPLIFIED APPROACH ==="
         
         # Backup original files
         echo "1. Backing up original Kconfig files..."
@@ -152,60 +152,59 @@ jobs:
         cp drivers/gpu/arm/Kconfig drivers/gpu/arm/Kconfig.backup 2>/dev/null || true
         cp drivers/gpu/arm/bv_r38p1/Kconfig drivers/gpu/arm/bv_r38p1/Kconfig.backup 2>/dev/null || true
         
-        echo "2. Patching init/Kconfig compiler version detection..."
+        echo "2. Simple Kconfig patching approach..."
+        echo "   Replacing broken version detection with static values..."
+        
         if [ -f "init/Kconfig" ]; then
-          # Replace broken script calls with hardcoded versions
-          sed -i 's|scripts/gcc-version.sh $(CC)|echo "110400"|g' init/Kconfig
-          sed -i 's|scripts/clang-version.sh $(CC)|echo "140000"|g' init/Kconfig
-          sed -i 's|scripts/lld-version.sh $(LD)|echo "140000"|g' init/Kconfig
+          # Simple approach: replace the problematic sections with static text
+          echo "   Creating a simplified init/Kconfig..."
           
-          # Hardcode version strings to avoid script calls
-          echo "Patching CC_VERSION_TEXT..."
-          sed -i '/config CC_VERSION_TEXT/,/^[[:space:]]*string/d' init/Kconfig
+          # Create a backup first
+          cp init/Kconfig init/Kconfig.original
           
-          # Add fixed version definitions
-          echo "Adding fixed compiler version definitions..."
-          sed -i '/^config GCC_VERSION/a \
-config CC_VERSION_TEXT\
-	string\
-	default "gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0" if GCC_VERSION = 110400' init/Kconfig
+          # Use awk to fix the problematic sections
+          awk '
+          /scripts\/gcc-version.sh/ { 
+            print "\t\tdefault \"gcc (Ubuntu 11.4.0) 11.4.0\""
+            next
+          }
+          /scripts\/clang-version.sh/ {
+            print "\t\tdefault \"clang version 14.0.0\""
+            next
+          }
+          /scripts\/lld-version.sh/ {
+            print "\t\tdefault \"LLD 14.0.0\""
+            next
+          }
+          { print }
+          ' init/Kconfig.original > init/Kconfig
           
-          sed -i '/^config CLANG_VERSION/a \
-config CLANG_VERSION_TEXT\
-	string\
-	default "clang version 14.0.0" if CLANG_VERSION = 140000' init/Kconfig
-          
-          sed -i '/^config LLD_VERSION/a \
-config LLD_VERSION_TEXT\
-	string\
-	default "LLD 14.0.0" if LLD_VERSION = 140000' init/Kconfig
+          echo "   init/Kconfig simplified"
         fi
         
         echo "3. Fixing drivers/gpu/arm/Kconfig..."
         if [ -f "drivers/gpu/arm/Kconfig" ]; then
           # Create minimal working GPU Kconfig
-          cat > drivers/gpu/arm/Kconfig << 'GPU_EOF'
-# SPDX-License-Identifier: GPL-2.0-only
-#
-# ARM GPU configuration
-#
-
-menuconfig GPU_ARM
-	bool "ARM GPU support"
-	depends on ARM || ARM64
-	help
-	  Say Y here to enable support for ARM GPUs.
-
-if GPU_ARM
-
-config MALI_DEFAULT
-	bool "Enable default Mali GPU settings"
-	default y
-	help
-	  Enable default Mali GPU settings.
-
-endif # GPU_ARM
-GPU_EOF
+          echo "# SPDX-License-Identifier: GPL-2.0-only" > drivers/gpu/arm/Kconfig
+          echo "#" >> drivers/gpu/arm/Kconfig
+          echo "# ARM GPU configuration" >> drivers/gpu/arm/Kconfig
+          echo "#" >> drivers/gpu/arm/Kconfig
+          echo "" >> drivers/gpu/arm/Kconfig
+          echo "menuconfig GPU_ARM" >> drivers/gpu/arm/Kconfig
+          echo "	bool \"ARM GPU support\"" >> drivers/gpu/arm/Kconfig
+          echo "	depends on ARM || ARM64" >> drivers/gpu/arm/Kconfig
+          echo "	help" >> drivers/gpu/arm/Kconfig
+          echo "	  Say Y here to enable support for ARM GPUs." >> drivers/gpu/arm/Kconfig
+          echo "" >> drivers/gpu/arm/Kconfig
+          echo "if GPU_ARM" >> drivers/gpu/arm/Kconfig
+          echo "" >> drivers/gpu/arm/Kconfig
+          echo "config MALI_DEFAULT" >> drivers/gpu/arm/Kconfig
+          echo "	bool \"Enable default Mali GPU settings\"" >> drivers/gpu/arm/Kconfig
+          echo "	default y" >> drivers/gpu/arm/Kconfig
+          echo "	help" >> drivers/gpu/arm/Kconfig
+          echo "	  Enable default Mali GPU settings." >> drivers/gpu/arm/Kconfig
+          echo "" >> drivers/gpu/arm/Kconfig
+          echo "endif # GPU_ARM" >> drivers/gpu/arm/Kconfig
         fi
         
         echo "4. Fixing MALI_ARBITRATION warning..."
@@ -215,7 +214,7 @@ GPU_EOF
           sed -i 's/^config MALI_ARBITRATION\t/# config MALI_ARBITRATION was here/' drivers/gpu/arm/bv_r38p1/Kconfig
         fi
         
-        echo "✅ Kconfig issues fixed"
+        echo "✅ Kconfig issues fixed (simplified approach)"
         
     # Step 8: Install SukiSU
     - name: Install SukiSU (Built-in Branch)
