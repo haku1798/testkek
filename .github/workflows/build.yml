@@ -106,9 +106,10 @@ jobs:
           pngcrush schedtool dpkg-dev liblz4-tool \
           make optipng maven libssl-dev pwgen libswitch-perl \
           patchelf bc libstdc++6 libncurses5 wget \
-          python3 python3-pip python-dev libffi-dev \
+          python3 python3-pip python3-dev libffi-dev \
           libxml2-dev libxslt1-dev libjpeg8-dev openjdk-11-jdk \
-          libtinfo5  # Added for newer ncurses compatibility
+          libtinfo5 libssl-dev libelf-dev libncurses-dev \
+          rsync cpio  # Added additional build dependencies
           
     - name: Install Toolchain
       run: |
@@ -271,7 +272,7 @@ jobs:
         mkdir -p kernel_output/modules
         find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null || true
         
-        # Create info file using echo to avoid heredoc issues
+        # Create info file
         {
           echo "Kernel: ${{ env.KERNEL_NAME }}"
           echo "Version: $KERNEL_VERSION"
@@ -307,7 +308,7 @@ jobs:
           cp kernel_output/modules/* AnyKernel3/modules/
         fi
         
-        # Create anykernel.sh script - using cat with EOF
+        # Create anykernel.sh script
         cat > AnyKernel3/anykernel.sh << 'AK_EOF'
         #!/system/bin/sh
         # AnyKernel3 Ramdisk Mod Script
