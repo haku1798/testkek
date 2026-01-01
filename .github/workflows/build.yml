@@ -271,19 +271,19 @@ jobs:
         mkdir -p kernel_output/modules
         find out -name "*.ko" -exec cp {} kernel_output/modules/ \; 2>/dev/null || true
         
-        # Create info file
-        cat > kernel_output/build-info.txt << EOF
-Kernel: ${{ env.KERNEL_NAME }}
-Version: $KERNEL_VERSION
-Architecture: ${{ env.ARCH }}
-Config: ${{ env.CONFIG }}
-Toolchain: ${{ env.TOOLCHAIN_VERSION }}
-KernelSU: Next (${{ env.KERNELSU_BRANCH }} branch)
-Build Method: ${{ steps.check-kernel.outputs.ksu_build_method }}
-GKI Status: ${{ steps.check-kernel.outputs.is_gki }} (${{ steps.check-kernel.outputs.gki_version }})
-Build Date: $(date)
-Git Commit: ${{ github.sha }}
-EOF
+        # Create info file using echo to avoid heredoc issues
+        {
+          echo "Kernel: ${{ env.KERNEL_NAME }}"
+          echo "Version: $KERNEL_VERSION"
+          echo "Architecture: ${{ env.ARCH }}"
+          echo "Config: ${{ env.CONFIG }}"
+          echo "Toolchain: ${{ env.TOOLCHAIN_VERSION }}"
+          echo "KernelSU: Next (${{ env.KERNELSU_BRANCH }} branch)"
+          echo "Build Method: ${{ steps.check-kernel.outputs.ksu_build_method }}"
+          echo "GKI Status: ${{ steps.check-kernel.outputs.is_gki }} (${{ steps.check-kernel.outputs.gki_version }})"
+          echo "Build Date: $(date)"
+          echo "Git Commit: ${{ github.sha }}"
+        } > kernel_output/build-info.txt
         
     - name: Create AnyKernel3 Flashable Zip
       run: |
@@ -307,8 +307,8 @@ EOF
           cp kernel_output/modules/* AnyKernel3/modules/
         fi
         
-        # Create anykernel.sh script
-        cat > AnyKernel3/anykernel.sh << 'EOF'
+        # Create anykernel.sh script - using cat with EOF
+        cat > AnyKernel3/anykernel.sh << 'AK_EOF'
         #!/system/bin/sh
         # AnyKernel3 Ramdisk Mod Script
         # osm0sis @ xda-developers
@@ -355,11 +355,11 @@ EOF
         fi
         
         ui_print "Kernel with KernelSU Next installed successfully!";
-        EOF
+        AK_EOF
         
         # Create update-binary
         mkdir -p AnyKernel3/META-INF/com/google/android
-        cat > AnyKernel3/META-INF/com/google/android/update-binary << 'EOF'
+        cat > AnyKernel3/META-INF/com/google/android/update-binary << 'UPDATE_EOF'
         #!/sbin/sh
         # AnyKernel3 Update Binary
         
@@ -375,7 +375,7 @@ EOF
         ui_print "Kernel version: $KERNEL_VERSION";
         
         . /tmp/anykernel/tools/ak3-core.sh;
-        EOF
+        UPDATE_EOF
         
         chmod +x AnyKernel3/anykernel.sh
         chmod +x AnyKernel3/META-INF/com/google/android/update-binary
